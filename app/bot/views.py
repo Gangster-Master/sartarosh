@@ -9,7 +9,13 @@ from typing import Any
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    WebAppInfo,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.bot import screen
@@ -242,6 +248,18 @@ async def send_onboarding(
         log.debug("send_onboarding failed: %s", e)
 
 
+def _webapp_url() -> str | None:
+    """The Mini App URL when it is configured (https) and the server is running."""
+    from app.config import get_config
+
+    url = get_config().webapp_public_url
+    if not url:
+        return None
+    from app.webapp import server  # local import: aiohttp app only when the feature is on
+
+    return url if server.RUNNING else None
+
+
 async def hub_content(
     sm: async_sessionmaker[AsyncSession], user: Any, roles: Any, lang: str
 ) -> tuple[str, InlineKeyboardMarkup]:
@@ -252,6 +270,12 @@ async def hub_content(
     shop_name = h(shop.shop_name) if shop.shop_name else t(lang, "hub.default_shop")
     text = t(lang, "hub.text", name=name, shop=shop_name)
     rows = []
+    webapp_url = _webapp_url()
+    if webapp_url:
+        # inline web_app button: a reply-keyboard Mini App gets no initData (docs/WEBAPP.md §2.4)
+        rows.append(
+            [InlineKeyboardButton(text=t(lang, "hub.webapp"), web_app=WebAppInfo(url=webapp_url))]
+        )
     if hint is not None:
         label = hint.barber_name  # button text is plain, not HTML
         if hint.service_name:

@@ -79,6 +79,8 @@ class BarberDTO:
     invite_token: str | None
     invite_expires_at: datetime | None
     pending_link_user_id: int | None
+    rating_avg: float | None = None  # public average of client ratings (1..5)
+    rating_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)

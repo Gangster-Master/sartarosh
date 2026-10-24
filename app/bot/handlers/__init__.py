@@ -24,6 +24,7 @@ from app.bot.handlers import (
     client_my,
     fallback,
     onboarding,
+    webapp_contact,
 )
 
 ORDER = (
@@ -45,6 +46,7 @@ ORDER = (
     client_my,
     client_info,
     client_feedback,
+    webapp_contact,  # F.contact outside the FSM contact steps
     fallback,
 )
 

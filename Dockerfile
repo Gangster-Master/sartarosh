@@ -23,5 +23,8 @@ USER bot
 
 VOLUME ["/app/data"]
 
+# Telegram Mini App (WEBAPP_ENABLED=true); serve it through a TLS reverse proxy
+EXPOSE 8080
+
 # apply migrations, then start polling (one instance only: bot.lock in /app/data)
 CMD ["sh", "-c", "python -m app.db.migrate && exec python -m app.bot.main"]

@@ -15,6 +15,7 @@ from app.services._common import (
     barber_dto,
     barber_dtos,
     booking_dtos,
+    has_hours,
     load_barber,
     load_user,
     require_admin,
@@ -64,7 +65,7 @@ def _new_token() -> str:
 async def list_barbers(session: AsyncSession, *, public_only: bool = True) -> list[BarberDTO]:
     stmt = select(Barber)
     if public_only:
-        stmt = stmt.where(Barber.is_active.is_(True), Barber.user_id.is_not(None))
+        stmt = stmt.where(Barber.is_active.is_(True), Barber.user_id.is_not(None), has_hours())
     rows = (await session.execute(stmt.order_by(Barber.sort_order, Barber.id))).scalars().all()
     return await barber_dtos(session, rows)
 

@@ -22,7 +22,7 @@ from app.bot.keyboards.common import btn, chunk, kb
 from app.bot.notifier import Notifier
 from app.bot.states import AdminBarberFlow
 from app.db.uow import read_tx, write_tx
-from app.services import barbers, catalog, clock, users
+from app.services import barbers, catalog, clock, schedule, users
 from app.services.errors import NotFoundError, ServiceError
 
 log = logging.getLogger(__name__)
@@ -81,6 +81,7 @@ async def show_card(
                 await users.get_user(s, b.pending_link_user_id) if b.pending_link_user_id else None
             )
             offered = await catalog.list_barber_services(s, b.id)
+            has_hours = bool(await schedule.get_week_hours(s, b.id))
     except NotFoundError:
         if isinstance(target, CallbackQuery):
             await views.stale(target, lang)
@@ -116,6 +117,8 @@ async def show_card(
     lines.append(t(lang, "admin.br.auto", value=onoff(b.auto_accept)))
     names = ", ".join(h(x.name) for x in offered if x.name) or "—"
     lines.append(t(lang, "admin.br.services", names=names))
+    if not has_hours:
+        lines.append(t(lang, "admin.br.no_hours"))
     if b.invite_token and b.user_id is None:
         exp = b.invite_expires_at
         if exp is None or exp > clock.now_utc():
@@ -146,7 +149,12 @@ async def show_card(
             ),
             btn(t(lang, "admin.br.services_btn"), acb(S, "svc", b.id)),
         ],
-        [btn(t(lang, "admin.br.hours_btn"), AdminCb(s="wh", a="pick", id=b.id))],
+        [
+            btn(
+                t(lang, "admin.br.hours_btn") if has_hours else t(lang, "admin.br.set_hours_now"),
+                AdminCb(s="wh", a="pick", id=b.id),
+            )
+        ],
     ]
     if b.user_id is None:
         rows.append([btn(t(lang, "admin.br.invite_btn"), acb(S, "inv", b.id))])

@@ -172,6 +172,96 @@ sudo chown 10001:10001 data/bot.db  # Docker only
 docker compose start bot           # or: sudo systemctl start sartarosh
 ```
 
+## 🌐 Mini App (web view)
+
+Besides the chat interface, clients can book in a Telegram Mini App: home screen (shop, bonus,
+next booking), booking wizard (service → barber / 🤝 Farqi yo'q → day → time → comment → confirm
+with bonus), my bookings with cancel, bonus history and referral link, barbers and prices.
+Barbers get a queue screen with ✅ Qabul qilish / ❌ Rad etish / ✅ Bajarildi / 🚫 Kelmadi.
+Proposing another time, staff cancellation, blocking time and all admin screens stay in the bot
+(the panel links to it: "Boshqa amallar botda →").
+Contract: [`docs/WEBAPP.md`](docs/WEBAPP.md).
+
+**How it works.** With `WEBAPP_ENABLED=true` the bot process also runs an aiohttp server on
+`WEBAPP_PORT`. It serves `app/webapp/static` (plain HTML/CSS/JS, no build step) and a JSON API
+under `/api`. Every API request carries Telegram's signed `initData`; the server checks the
+HMAC-SHA256 signature with the bot token and its age, then maps the Telegram user to the same
+`users` row the bot uses (blocked users, consent and roles apply). Every write goes through the
+same `app/services` functions as the bot and sends the same Telegram notifications: a booking
+made in the app reaches the barber as the usual message with Accept/Reject buttons.
+
+When `WEBAPP_URL` is set (https) and the server is running, the bot sets the chat **menu button**
+("Ilova") to the app at start and shows **🌐 Ilovani ochish** on the client main menu (hub
+message). The button is inline on purpose: a Mini App opened from a reply-keyboard button gets no
+`initData`.
+
+**BotFather.**
+- Nothing is required: the menu button is set by the bot itself, and `/setdomain` is not needed.
+- Optional: `/mybots` → your bot → *Bot Settings* → *Configure Mini App* → enable, URL =
+  `WEBAPP_URL`. This gives a `t.me/<bot>/app` link; `?startapp=ref_<code>` works like
+  `/start ref_<code>`. A user who arrives by this link may never have started the bot; before
+  the first booking the app asks Telegram for permission to message them
+  (`requestWriteAccess`). If they refuse, they are warned that no confirmations or reminders
+  will arrive.
+
+**Local development.** Telegram opens only https URLs, so use a tunnel:
+
+```bash
+# .env: WEBAPP_ENABLED=true
+python run.py --migrate
+cloudflared tunnel --url http://localhost:8080
+```
+
+Put the printed `https://….trycloudflare.com/` into `WEBAPP_URL` and restart the bot. A quick
+tunnel gets a new URL on every run, and hub messages that were already sent keep the old one; use a
+named tunnel or a fixed domain in production. `curl http://localhost:8080/healthz` checks the
+server.
+
+**Production.** Run behind nginx or Caddy with HTTPS. Bind `WEBAPP_HOST=127.0.0.1` when the proxy
+runs on the same host.
+
+```
+# Caddyfile
+shop.example.uz {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+```nginx
+server {
+    server_name shop.example.uz;
+    client_max_body_size 64k;
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+    # listen 443 ssl + certificates: certbot --nginx -d shop.example.uz
+}
+```
+
+- Never expose port 8080 to the internet without TLS.
+- Never log `$http_authorization` in an nginx `log_format`: it carries the signed initData.
+- **Set `WEBAPP_TRUST_PROXY=true` for every setup above** (nginx, Caddy, cloudflared): they all
+  connect from `127.0.0.1`, so without it every user shares one IP for the per-IP limits
+  (avatars, failed logins). The server uses the *rightmost* `X-Forwarded-For` entry (the one your
+  proxy appended), so clients cannot spoof it. Leave it `false` only when the port is reached
+  directly with no proxy.
+- Docker: `docker-compose.yml` publishes `127.0.0.1:8080` for a proxy on the host. If Caddy or
+  cloudflared runs as a compose service instead, drop `ports:` and proxy to `bot:8080`.
+- Run one replica only (`bot.lock` protects a single instance).
+
+**Troubleshooting.**
+- "Sessiya eskirdi": the initData is older than `WEBAPP_AUTH_MAX_AGE` (or
+  `WEBAPP_AUTH_MAX_AGE_WRITE` for actions; both 24 h by default). Telegram never refreshes it
+  inside an open app, so close and reopen the app. Lowering `WEBAPP_AUTH_MAX_AGE_WRITE` (e.g. to
+  `3600`) means a barber who keeps the panel open all day must reopen it before each action.
+- Port already in use: pick another `WEBAPP_PORT` and point the tunnel/proxy at it.
+- No menu button / no 🌐 button: `WEBAPP_URL` is empty or not https, or the server could not bind
+  the port (see the log line `webapp could not start …`). The bot keeps working either way.
+- The app shows "open it from the bot": it was opened outside Telegram or from a reply keyboard.
+
 ## Configuration (`.env`)
 
 | Variable | Default | |
@@ -184,7 +274,14 @@ docker compose start bot           # or: sudo systemctl start sartarosh
 | `LOG_LEVEL` | `INFO` | |
 | `REDIS_URL` | — | optional FSM storage; by default the FSM is stored in the database |
 | `SCHEDULER_TICK_SECONDS` | `30` | |
-| `THROTTLE_PER_MINUTE` | `30` | per-user message + button limit |
+| `THROTTLE_PER_MINUTE` | `30` | per-user message + button limit (also the Mini App write limit) |
+| `WEBAPP_ENABLED` | `false` | start the Mini App server in the bot process |
+| `WEBAPP_HOST` | `127.0.0.1` | bind address (`docker-compose.yml` sets `0.0.0.0`) |
+| `WEBAPP_PORT` | `8080` | |
+| `WEBAPP_URL` | — | public `https://` URL of the app; empty or not https = Mini App buttons hidden |
+| `WEBAPP_AUTH_MAX_AGE` | `86400` | max initData age in seconds for reads |
+| `WEBAPP_AUTH_MAX_AGE_WRITE` | `86400` | max initData age in seconds for writes |
+| `WEBAPP_TRUST_PROXY` | `false` | use the rightmost `X-Forwarded-For` entry for per-IP limits; set `true` behind nginx/Caddy/cloudflared |
 
 ## Development
 
@@ -195,5 +292,6 @@ pytest -q
 ```
 
 Layout: `app/services` (business logic, no aiogram), `app/db` (models, sessions, migrations),
-`app/bot` (aiogram handlers, keyboards, locales, middlewares, notifier, scheduler).
+`app/bot` (aiogram handlers, keyboards, locales, middlewares, notifier, scheduler),
+`app/webapp` (Mini App server and API; `static/` is the frontend).
 Every user-visible string lives in `app/bot/locales/uz.py` (and the same key in `ru.py`).

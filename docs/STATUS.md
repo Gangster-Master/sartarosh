@@ -124,3 +124,56 @@ mitigated. The open items are listed under "Known limitations" and in the roadma
   - Let the barber make a second proposal.
 
 **Later:** `.ics` files and recurring bookings, loyalty tiers and bonus expiry, Click/Payme deposits, gift certificates, LTV analytics, Sheets/Calendar export, payroll.
+
+## 6. Web App (Telegram Mini App)
+
+**Done.** An aiohttp server runs in the bot process (`WEBAPP_ENABLED`, `WEBAPP_HOST`,
+`WEBAPP_PORT`, `WEBAPP_URL`, `WEBAPP_AUTH_MAX_AGE[_WRITE]`, `WEBAPP_TRUST_PROXY`). It serves
+`app/webapp/static`: plain HTML/CSS/ES modules with no build step, Telegram theme variables,
+MainButton/BackButton and haptics, and Uzbek Latin text. It also serves a JSON API under `/api`.
+
+- **Auth:** every call carries the initData. It is checked with HMAC-SHA256 using
+  secret = HMAC("WebAppData", token), compared in constant time, with an age check, a 60 s
+  future-skew limit, a 4 KB cap and duplicate keys rejected. The user is mapped to the `users`
+  row the same way as `/start`. Blocked users, consent and roles are enforced.
+- **Client screens:** home, the booking wizard (including "Farqi yo'q", the phone step via
+  `requestContact` and the bonus option), my bookings with the bot's cancel policy, bonus with
+  the referral link, and barbers with prices.
+- **Barber screens:** a queue with Qabul qilish / Rad etish / Bajarildi / Kelmadi.
+- **Writes:** all go through `app.services` under a per-booking lock and an idempotency key.
+  Notifications go through the bot's `Notifier`, so the barber gets the same Accept/Reject
+  message.
+- **Bot:** sets the chat menu button and adds a "🌐 Ilovani ochish" inline button on the client
+  hub.
+- **Tests:** 423 pass in total. About 80 of them cover the Mini App: auth, API, QA and the judge
+  fixes. An API smoke test and a headless-Chrome end-to-end run against the real backend also
+  pass. `node --check` passes on all 15 JS modules.
+
+**Judge rulings on the review findings:**
+
+| # | Finding | Ruling |
+|---|---|---|
+| 1 | Phone fallback pointed to a bot button that isn't there | **Fixed.** New `POST /api/me/request-phone` sends the bot's `contact_request` keyboard before the app opens the chat. `webapp_contact` saves the reply. |
+| 2 | Write session expired after 1 h (barber dead end) | **Fixed.** `WEBAPP_AUTH_MAX_AGE_WRITE` now defaults to 86400, the same as reads, since the initData is the same bearer token either way. A session-token exchange is still deferred. README explains the trade-off. |
+| 3 | Users who only open the app may never get messages | **Fixed.** `/api/me` returns `allows_write_to_bot`. Before submitting a booking the app calls `requestWriteAccess` (6.9+), and Telegram answers at once if access was already allowed. If the user refuses, a confirm warns that no confirmations or reminders will arrive. |
+| 4 | All users share one IP behind a proxy | **Fixed in docs.** README says to set `WEBAPP_TRUST_PROXY=true` for nginx, Caddy and cloudflared. The default stays `false`. |
+| 5 | Leftmost X-Forwarded-For can be spoofed; limiter clear-all | **Fixed.** The rightmost entry is used, and the limiter evicts the oldest key instead of clearing all. |
+| 6 | Late-accept of an expired booking is not possible in the panel | **Fixed.** The queue includes EXPIRED bookings that are still late-acceptable. |
+| 7 | A malformed `#/…%E0` hash hangs boot | **Fixed.** The decode is wrapped in try/catch. |
+| 8 | Huge ids cause a 500 | **Fixed.** Ids above 2^53 return 400 `invalid`. |
+| 9 | Idempotency key ignored the bonus toggle | **Fixed.** The key is computed at submit time over the full payload. |
+| 10 | Barber buttons depend on the phone clock | **Fixed.** The clock offset comes from the HTTP `Date` header, and the buttons unlock in place when the time arrives. |
+| 11 | Menu button label is always "Ilova" | **Won't fix (cosmetic).** The UI is Uzbek-only. |
+| 12 | After consent, no reply menu or commands; panel scope not documented | **Fixed.** Consent in the app sends the `menu_for` keyboard and sets per-chat commands. README lists what stays in the bot. |
+| 13 | `WEBAPP_HOST` default 127.0.0.1 instead of 0.0.0.0 | **Accepted deviation.** It is safer behind a proxy, and docker-compose sets 0.0.0.0. |
+
+**Limitations:**
+- **Not tested in real Telegram:** not yet run in the real clients (Android, iOS, Desktop).
+- **Port 8080:** on the dev machine it is taken by another `node` process. Pick another
+  `WEBAPP_PORT` there.
+- **Barber actions not in the app:** propose time, staff cancel, time blocks and admin screens
+  stay in the bot.
+- **Session length:** a Mini App open for more than 24 h shows "Sessiya eskirdi" and must be
+  reopened. A server session token is planned for v1.1.
+- **JS size:** about 80 KB unminified, against a 60 KB budget.
+- **Bot token:** it was pasted in chat, so revoke it in BotFather and set the new one in `.env`.

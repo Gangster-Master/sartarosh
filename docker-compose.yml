@@ -10,6 +10,10 @@ services:
       # paths inside the container (relative values resolve against /app)
       DATABASE_URL: sqlite+aiosqlite:///data/bot.db
       DATA_DIR: data
+      # Mini App server (WEBAPP_ENABLED / WEBAPP_URL in .env); listen inside the container
+      WEBAPP_HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:8080:8080"   # Mini App; put a TLS reverse proxy in front (README "Mini App")
     volumes:
       - ./data:/app/data
     restart: unless-stopped

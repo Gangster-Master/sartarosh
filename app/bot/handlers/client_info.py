@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.bot import screen, views
 from app.bot.callbacks import BarberCardCb, HubCb
 from app.bot.i18n import fmt_date_short, fmt_price, fmt_stamps, h, t, weekday_name, weekday_short
+from app.bot.keyboards.client import rating_badge
 from app.bot.keyboards.common import btn, home_btn, kb, lang_picker, url_btn
 from app.db.enums import BonusReason, LoyaltyMode
 from app.db.uow import read_tx
@@ -108,7 +109,10 @@ async def show_prices(target: Target, state: FSMContext | None, sm: SM, lang: st
     rows = []
     if team:
         lines.extend(["", t(lang, "info.team")])
-        rows = [[btn(f"💈 {b.display_name}", BarberCardCb(a="view", b=b.id))] for b in team]
+        rows = [
+            [btn(f"💈 {b.display_name}{rating_badge(b)}", BarberCardCb(a="view", b=b.id))]
+            for b in team
+        ]
     rows.append([btn(t(lang, "hub.book"), HubCb(a="book")), home_btn(lang)])
     await screen.render(target, state, "\n".join(lines), kb(rows))
 
@@ -118,6 +122,10 @@ async def barber_card_content(sm: SM, barber_id: int, lang: str) -> tuple[str, s
         b = await barbers.get_barber(s, barber_id)
         offered = await catalog.list_barber_services(s, barber_id) if b.is_public else []
     lines = [f"💈 <b>{h(b.display_name)}</b>"]
+    if b.rating_count:
+        lines.append(t(lang, "info.rating", avg=f"{b.rating_avg:.1f}", n=b.rating_count))
+    else:
+        lines.append(t(lang, "info.no_rating"))
     if b.bio:
         lines.extend(["", h(b.bio)])
     if offered:

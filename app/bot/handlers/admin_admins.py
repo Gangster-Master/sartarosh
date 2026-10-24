@@ -23,7 +23,7 @@ from app.bot.notifier import Notifier
 from app.bot.states import AdminAdminsFlow
 from app.config import get_config
 from app.db.uow import read_tx, write_tx
-from app.services import barbers, users
+from app.services import barbers, schedule, users
 from app.services.errors import ServiceError
 
 log = logging.getLogger(__name__)
@@ -198,7 +198,15 @@ async def on_link_decision(
         await screen.render(call, None, t(lang, "common.stale"))
         return
     key = "admin.adm.link_approved" if approve else "admin.adm.link_denied"
-    await screen.render(
-        call, None, t(lang, key, user=h(linked_user.display_name), barber=h(barber.display_name))
-    )
+    text = t(lang, key, user=h(linked_user.display_name), barber=h(barber.display_name))
+    markup = None
+    if approve:  # a new barber is invisible to clients until he has hours
+        async with read_tx(sm) as s:
+            has_hours = bool(await schedule.get_week_hours(s, barber.id))
+        if not has_hours:
+            text += "\n\n" + t(lang, "admin.br.no_hours")
+            markup = kb(
+                [[btn(t(lang, "admin.br.set_hours_now"), AdminCb(s="wh", a="pick", id=barber.id))]]
+            )
+    await screen.render(call, None, text, markup)
     await notifier.link_decided(barber, linked_user.tg_id, approve)

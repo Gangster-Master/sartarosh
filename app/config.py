@@ -6,6 +6,7 @@ deployment values are read from the environment / ``.env``.
 
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 CONSENT_VERSION: int = 1  # bump when the privacy text changes -> users are asked again
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
+_WARNED: list[bool] = []  # WEBAPP_URL warning logged once per process
 
 
 class Config(BaseSettings):
@@ -35,6 +37,14 @@ class Config(BaseSettings):
     scheduler_tick_seconds: int = 30
     throttle_per_minute: int = 30
     db_echo: bool = False
+    # --- Telegram Mini App (docs/WEBAPP.md §1)
+    webapp_enabled: bool = False  # WEBAPP_ENABLED
+    webapp_host: str = "127.0.0.1"  # WEBAPP_HOST (docker compose sets 0.0.0.0)
+    webapp_port: int = 8080  # WEBAPP_PORT
+    webapp_url: str = ""  # WEBAPP_URL: public https URL of index.html
+    webapp_auth_max_age: int = 86400  # WEBAPP_AUTH_MAX_AGE, seconds (GET)
+    webapp_auth_max_age_write: int = 86400  # WEBAPP_AUTH_MAX_AGE_WRITE, seconds (POST)
+    webapp_trust_proxy: bool = False  # WEBAPP_TRUST_PROXY: X-Forwarded-For for per-IP limits
 
     @property
     def invalid_admin_ids(self) -> list[str]:
@@ -61,6 +71,22 @@ class Config(BaseSettings):
             except ValueError:
                 continue
         return frozenset(out)
+
+    @property
+    def webapp_public_url(self) -> str | None:
+        """WEBAPP_URL if the web app is enabled and the URL starts with https://, else None."""
+        url = (self.webapp_url or "").strip()
+        if not self.webapp_enabled or not url:
+            return None
+        if not url.lower().startswith("https://"):
+            if not _WARNED:
+                logging.getLogger("app.config").warning(
+                    "WEBAPP_URL must start with https:// (Telegram opens only https Mini Apps); "
+                    "the Mini App buttons are hidden"
+                )
+                _WARNED.append(True)
+            return None
+        return url
 
     @property
     def data_path(self) -> Path:

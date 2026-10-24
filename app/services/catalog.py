@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Barber, BarberService, Service
 from app.services import clock
-from app.services._common import barber_dtos, load_barber, require_admin
+from app.services._common import barber_dtos, has_hours, load_barber, require_admin
 from app.services.audit import write_audit
 from app.services.dto import BarberDTO, ResolvedService, ServiceDTO
 from app.services.errors import InputError, NotFoundError
@@ -97,7 +97,7 @@ async def _public_barbers(session: AsyncSession) -> list[Barber]:
         (
             await session.execute(
                 select(Barber)
-                .where(Barber.is_active.is_(True), Barber.user_id.is_not(None))
+                .where(Barber.is_active.is_(True), Barber.user_id.is_not(None), has_hours())
                 .order_by(Barber.sort_order, Barber.id)
             )
         ).scalars()

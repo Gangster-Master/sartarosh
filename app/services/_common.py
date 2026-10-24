@@ -7,12 +7,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta
+from typing import Any
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_config
-from app.db.models import Barber, Booking, User
+from app.db.models import Barber, Booking, Review, User, WorkingHours
 from app.services import clock
 from app.services.dto import BarberDTO, BookingDTO, DecisionTarget, Roles, UserDTO
 from app.services.errors import NotFoundError, PermissionDeniedError
@@ -152,6 +153,17 @@ async def barber_dtos(session: AsyncSession, barbers: Sequence[Barber]) -> list[
             await session.execute(select(User.id, User.tg_id).where(User.id.in_(user_ids)))
         ).all():
             tg[uid] = tg_id
+    ratings: dict[int, tuple[float, int]] = {}
+    barber_ids = [b.id for b in barbers]
+    if barber_ids:
+        for bid, avg, cnt in (
+            await session.execute(
+                select(Review.barber_id, func.avg(Review.rating), func.count())
+                .where(Review.barber_id.in_(barber_ids))
+                .group_by(Review.barber_id)
+            )
+        ).all():
+            ratings[bid] = (round(float(avg), 1), int(cnt))
     return [
         BarberDTO(
             id=b.id,
@@ -170,9 +182,16 @@ async def barber_dtos(session: AsyncSession, barbers: Sequence[Barber]) -> list[
             invite_token=b.invite_token,
             invite_expires_at=b.invite_expires_at,
             pending_link_user_id=b.pending_link_user_id,
+            rating_avg=ratings.get(b.id, (None, 0))[0],
+            rating_count=ratings.get(b.id, (None, 0))[1],
         )
         for b in barbers
     ]
+
+
+def has_hours() -> Any:
+    """SQL condition: the barber has at least one working day (else clients can't book him)."""
+    return select(WorkingHours.id).where(WorkingHours.barber_id == Barber.id).exists()
 
 
 async def barber_dto(session: AsyncSession, b: Barber) -> BarberDTO:

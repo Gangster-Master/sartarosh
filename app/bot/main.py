@@ -2,7 +2,8 @@
 
 Startup order: config + logging + tz grid check → single-instance lock →
 engine + schema check → setup token → Bot/storage → Dispatcher + middlewares →
-routers + error handler → commands → scheduler → polling.
+routers + error handler → commands → scheduler → Mini App server (WEBAPP_ENABLED) +
+menu button → polling.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from app.bot.commands import set_default_commands, set_user_commands
 from app.bot.fsm_storage import DbStorage
 from app.bot.handlers import build_root_router, errors
 from app.bot.i18n import norm_lang
+from app.bot.menu_button import setup_menu_button
 from app.bot.middlewares import (
     DebounceMiddleware,
     PrivateOnlyMiddleware,
@@ -191,9 +193,29 @@ async def run() -> None:
             log.exception("refreshing staff commands failed")
 
         scheduler.start(bot, sm, notifier)
+        webapp = None
+        if cfg.webapp_enabled:
+            from app.webapp.server import create_app, start_webapp
+
+            web_app = create_app(
+                sm=sm,
+                bot=bot,
+                notifier=notifier,
+                bot_token=cfg.bot_token.get_secret_value(),
+                bot_username=me.username or "",
+            )
+            try:
+                webapp = await start_webapp(web_app, host=cfg.webapp_host, port=cfg.webapp_port)
+            except OSError as e:  # port in use etc.: the bot keeps working without the web app
+                log.error(
+                    "webapp could not start on %s:%s: %s", cfg.webapp_host, cfg.webapp_port, e
+                )
+        await setup_menu_button(bot, cfg.webapp_public_url if webapp else None)
         try:
             await dp.start_polling(bot, allowed_updates=allowed_updates(dp), handle_signals=True)
         finally:
+            if webapp is not None:
+                await webapp.stop()  # drains pending notifications before the session closes
             scheduler.shutdown()
             await storage.close()
             await bot.session.close()

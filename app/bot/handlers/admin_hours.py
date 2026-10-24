@@ -35,6 +35,22 @@ SM = async_sessionmaker[AsyncSession]
 ANY = StateFilter("*")
 Target = CallbackQuery | Message
 S = "wh"
+# one-tap ranges for a working day (callback values carry no ':' — that is the separator)
+RANGE_PRESETS = ("09:00-18:00", "09:00-20:00", "10:00-19:00", "10:00-20:00", "10:00-21:00")
+STD_HOURS = (time(10), time(20), time(13), time(14))  # Mon–Sat preset for a barber with no hours
+
+
+def _pack(raw: str) -> str:
+    return raw.replace(":", "")
+
+
+def _unpack_range(v: str) -> tuple[time, time] | None:
+    a, _, b = v.partition("-")
+    return (
+        views.parse_time_range(f"{a[:2]}:{a[2:]}-{b[:2]}:{b[2:]}")
+        if len(a) == len(b) == 4
+        else None
+    )
 
 
 def _fmt(tm: time | None) -> str:
@@ -73,9 +89,15 @@ async def show_week(
     lines.append("")
     for wd in range(7):
         lines.append(f"<b>{weekday_short(wd, lang)}</b>  {_day_text(week.get(wd), lang)}")
+    lines.extend(["", t(lang, "admin.wh.no_hours") if not week else t(lang, "admin.wh.tap_day")])
     buttons = [btn(weekday_short(wd, lang), acb(S, "wd", barber_id, str(wd))) for wd in range(7)]
-    rows = chunk(buttons, 4)
-    rows.append([btn(t(lang, "admin.wh.copy"), acb(S, "copy", barber_id))])
+    rows = []
+    if not week:  # a fresh barber: one tap to a usable schedule
+        rows.append([btn(t(lang, "admin.wh.std"), acb(S, "std", barber_id))])
+        rows.append([btn(t(lang, "admin.wh.copy_barber"), acb(S, "cpb", barber_id))])
+    rows.extend(chunk(buttons, 4))
+    if week:
+        rows.append([btn(t(lang, "admin.wh.copy"), acb(S, "copy", barber_id))])
     rows.append([back_btn(lang, S, "barbers")])
     await screen.render(target, None, "\n".join(lines), kb(rows))
 
@@ -109,10 +131,13 @@ async def on_admin_hours(
             await state.clear()
             await state.set_state(AdminHoursFlow.start)
             await state.update_data(barber_id=bid, weekday=wd)
-            rows = [
-                [btn(t(lang, "admin.wh.set_off"), acb(S, "off", bid, str(wd)))],
-                [btn(t(lang, "common.cancel"), acb(S, "pick", bid))],
+            presets = [
+                btn(raw.replace("-", "–"), acb(S, "rng", bid, f"{wd}|{_pack(raw)}"))
+                for raw in RANGE_PRESETS
             ]
+            rows = chunk(presets, 2)
+            rows.append([btn(t(lang, "admin.wh.set_off"), acb(S, "off", bid, str(wd)))])
+            rows.append([btn(t(lang, "common.cancel"), acb(S, "pick", bid))])
             text = t(lang, "admin.wh.ask_range", day=weekday_name(wd, lang).capitalize())
             await screen.render(call, state, text, kb(rows))
         elif a == "off":
@@ -130,11 +155,83 @@ async def on_admin_hours(
                 )
             await state.clear()
             await show_week(call, sm, lang, bid, note=_out_of_hours_note(res.out_of_hours, lang))
-        elif a == "nobr":
+        elif a == "rng":
+            wd_s, _, packed = v.partition("|")
+            rng = _unpack_range(packed)
+            data = await state.get_data()
+            if (
+                rng is None
+                or await state.get_state() != AdminHoursFlow.start.state
+                or data.get("barber_id") != bid
+                or str(data.get("weekday")) != wd_s
+            ):
+                await views.stale(call, lang)
+                return
+            await _ask_break(call, state, lang, bid, rng[0], rng[1])
+        elif a in ("nobr", "brk"):
             if await state.get_state() != AdminHoursFlow.break_.state:
                 await views.stale(call, lang)
                 return
-            await _save(call, state, sm, user, lang, None, None)
+            rng = _unpack_range(v) if a == "brk" else None
+            if a == "brk" and rng is None:
+                await views.stale(call, lang)
+                return
+            await _save(call, state, sm, user, lang, *(rng or (None, None)))
+        elif a == "std":
+            async with write_tx(sm) as s:
+                if await schedule.get_week_hours(s, bid):  # stale button: never overwrite
+                    raise _AlreadySet
+                st, en, bs, be = STD_HOURS
+                for wd in range(6):
+                    await schedule.set_working_hours(
+                        s,
+                        actor_user_id=user.id,
+                        barber_id=bid,
+                        weekday=wd,
+                        start_time=st,
+                        end_time=en,
+                        break_start=bs,
+                        break_end=be,
+                    )
+            await state.clear()
+            await show_week(call, sm, lang, bid, note=t(lang, "admin.saved"))
+        elif a == "cpb":
+            async with read_tx(sm) as s:
+                others = [
+                    (b, await schedule.get_week_hours(s, b.id))
+                    for b in await barbers.list_barbers(s, public_only=False)
+                    if b.is_active and b.id != bid
+                ]
+            rows = [
+                [btn(f"💈 {b.display_name}", acb(S, "cpbg", bid, str(b.id)))]
+                for b, wk in others
+                if wk
+            ]
+            if not rows:
+                await views.alert(call, t(lang, "admin.wh.copy_barber_none"))
+                return
+            rows.append([back_btn(lang, S, "pick", bid)])
+            await screen.render(call, None, t(lang, "admin.wh.copy_barber_pick"), kb(rows))
+        elif a == "cpbg":
+            if not v.isdigit():
+                await views.stale(call, lang)
+                return
+            async with write_tx(sm) as s:
+                if await schedule.get_week_hours(s, bid):
+                    raise _AlreadySet
+                for w in await schedule.get_week_hours(s, int(v)):
+                    await schedule.set_working_hours(
+                        s,
+                        actor_user_id=user.id,
+                        barber_id=bid,
+                        weekday=w.weekday,
+                        start_time=w.start_time,
+                        end_time=w.end_time,
+                        break_start=w.break_start,
+                        break_end=w.break_end,
+                    )
+            await state.clear()
+            await show_week(call, sm, lang, bid, note=t(lang, "admin.saved"))
         elif a == "copy":
             async with read_tx(sm) as s:
                 week = await schedule.get_week_hours(s, bid)
@@ -174,8 +271,30 @@ async def on_admin_hours(
             await show_week(call, sm, lang, bid, note=_out_of_hours_note(out, lang))
         else:
             await views.stale(call, lang)
+    except _AlreadySet:
+        await state.clear()
+        await show_week(call, sm, lang, bid)
     except ServiceError as e:
         await views.alert(call, views.err_text(lang, e))
+
+
+class _AlreadySet(Exception):
+    """A one-tap preset arrived after the barber already got hours."""
+
+
+async def _ask_break(
+    target: Target, state: FSMContext, lang: str, bid: int, start: time, end: time
+) -> None:
+    await state.update_data(start=start.strftime("%H:%M"), end=end.strftime("%H:%M"))
+    await state.set_state(AdminHoursFlow.break_)
+    rows = [
+        [
+            btn("☕ 13:00–14:00", acb(S, "brk", bid, "1300-1400")),
+            btn(t(lang, "admin.wh.no_break"), acb(S, "nobr", bid)),
+        ],
+        [btn(t(lang, "common.cancel"), acb(S, "pick", bid))],
+    ]
+    await screen.render(target, state, t(lang, "admin.wh.ask_break"), kb(rows))
 
 
 @router.message(StateFilter(AdminHoursFlow.start), F.text)
@@ -184,14 +303,8 @@ async def on_range(message: Message, state: FSMContext, lang: str) -> None:
     if rng is None:
         await message.answer(t(lang, "admin.wh.bad_range"))
         return
-    await state.update_data(start=rng[0].strftime("%H:%M"), end=rng[1].strftime("%H:%M"))
-    await state.set_state(AdminHoursFlow.break_)
     data = await state.get_data()
-    rows = [
-        [btn(t(lang, "admin.wh.no_break"), acb(S, "nobr", int(data["barber_id"])))],
-        [btn(t(lang, "common.cancel"), acb(S, "pick", int(data["barber_id"])))],
-    ]
-    await screen.render(message, state, t(lang, "admin.wh.ask_break"), kb(rows))
+    await _ask_break(message, state, lang, int(data["barber_id"]), rng[0], rng[1])
 
 
 @router.message(StateFilter(AdminHoursFlow.break_), F.text)

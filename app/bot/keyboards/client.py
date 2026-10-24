@@ -37,6 +37,13 @@ def services_kb(items: list[tuple[int, str]], lang: str, *, back: bool) -> Inlin
     return kb(rows)
 
 
+def rating_badge(b: Any) -> str:
+    """Short public rating suffix for a barber button: ' ⭐4.8 (12)'."""
+    if getattr(b, "rating_count", 0):
+        return f" ⭐{b.rating_avg:.1f} ({b.rating_count})"
+    return ""
+
+
 def barbers_kb(
     barbers: list[Any], lang: str, *, back: bool, allow_any: bool = True
 ) -> InlineKeyboardMarkup:
@@ -46,7 +53,7 @@ def barbers_kb(
     for b in barbers:
         rows.append(
             [
-                btn(f"💈 {b.display_name}", BarberCb(b=b.id)),
+                btn(f"💈 {b.display_name}{rating_badge(b)}", BarberCb(b=b.id)),
                 btn("ℹ️", BarberCardCb(a="view", b=b.id)),
             ]
         )
