@@ -1,0 +1,10 @@
+# Runtime dependencies (ARCHITECTURE.md §0.3). Target: Python 3.10 and 3.12.
+aiogram==3.31.0
+SQLAlchemy[asyncio]==2.0.55      # NOT 2.1.x (needs 3.11+)
+aiosqlite==0.22.1
+alembic>=1.19,<1.20              # NOT 1.20.x yet
+pydantic-settings==2.15.0        # NOT 2.16.x (needs 3.11+)
+APScheduler==3.11.3              # NOT 4.x
+tzdata>=2025.2                   # required: slim images have no zoneinfo db
+# optional: only if REDIS_URL is used for FSM storage
+# redis==8.1.0

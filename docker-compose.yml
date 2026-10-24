@@ -1,0 +1,31 @@
+# docker compose up -d --build
+# Copy .env.example to .env and fill BOT_TOKEN and ADMIN_IDS first.
+services:
+  bot:
+    build: .
+    image: sartarosh-bot:latest
+    container_name: sartarosh-bot
+    env_file: .env
+    environment:
+      # paths inside the container (relative values resolve against /app)
+      DATABASE_URL: sqlite+aiosqlite:///data/bot.db
+      DATA_DIR: data
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    # never scale this service: SQLite + bot.lock allow exactly one instance
+    deploy:
+      replicas: 1
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # Optional: Redis for FSM storage. Enable it and set REDIS_URL=redis://redis:6379/0 in .env
+  # (also uncomment redis in requirements.txt). Without it the FSM lives in the database.
+  # redis:
+  #   image: redis:7-alpine
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ./data/redis:/data
