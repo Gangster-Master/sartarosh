@@ -158,6 +158,7 @@ button.card:active,.row:active:not(:disabled):not(div){transform:scale(.985);opa
 .barber{padding:14px 16px;display:flex;flex-direction:column;gap:12px}
 .barber-head{display:flex;gap:12px;align-items:flex-start}
 .barber-name{font-size:17px;font-weight:700;margin-bottom:2px}
+.barber-rating{margin-bottom:4px}
 .prices{display:flex;flex-direction:column}
 .price-row{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:baseline;padding:7px 0;border-top:.5px solid var(--sep)}
 /* barber panel */

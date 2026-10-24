@@ -226,6 +226,8 @@ _RU: dict[str, str] = {
     "my.ack_done": "👍 Спасибо! Ждём вас {when}.",
     "my.visit_yes": "Спасибо, подтверждено! ✂️",
     "my.visit_no": "Спасибо, что сообщили. Мы передали администрации.",
+    "my.visit_already_yes": "Вы уже подтвердили этот визит.",
+    "my.visit_already_no": "Вы уже сообщили, что визита не было.",
     # info
     "info.prices_title": "💈 <b>Услуги и цены</b>",
     "info.price_line": "• {name} — {price} · {min} мин",
@@ -317,10 +319,11 @@ _RU: dict[str, str] = {
     "notify.nightly": (
         "🌙 <b>Неотмеченные записи: {n}</b>\n"
         "Пожалуйста, отметьте «выполнено» или «неявка». "
-        "Если не отметить, через {hours} ч они закроются как выполненные."
+        "Если не отметить, через {hours} ч после визита (после этого сообщения) они закроются как выполненные."
     ),
     # barber
     "barber.accept": "✅ Принять",
+    "barber.late_accept": "✅ Всё же принять",
     "barber.reject": "❌ Отклонить",
     "barber.propose": "🕒 Предложить другое время",
     "barber.reason_other": "Другое…",
@@ -394,12 +397,14 @@ _RU: dict[str, str] = {
         "хочет подключиться как «{barber}»."
     ),
     "admin.alert.barber_unreachable": "⚠️ «{name}» заблокировал бота — его заявки идут администраторам.",
+    "admin.alert.barber_left": "⚠️ Мастер «{name}» удалил свой аккаунт в боте. Его будущие записи ({n}) отменены, клиенты уведомлены.",
     "admin.alert.no_targets": "⚠️ Для заявки #{id} не найден получатель.",
     "admin.alert.expired": "⌛ Заявка #{id} истекла: {client} → {name}, {when}",
     "admin.alert.pending_digest": "☀️ Заявки, на которые мастер не может ответить: {n}",
     "admin.alert.low_rating": "⭐ Низкая оценка: {rating}/5",
     "admin.alert.visit_denied": "⚠️ Клиент не подтвердил ручную запись:",
     "admin.alert.backup_failed": "🛑 Резервная копия не создана! Проверьте логи.",
+    "admin.alert.backup_too_big": "⚠️ Резервная копия ({size_mb} МБ) слишком большая для отправки в Telegram. Она сохранена на сервере: {name}",
     # admin barbers
     "admin.br.title": "💈 <b>Мастера</b>",
     "admin.br.legend": "🔴 не подключён · ⚠️ недоступен · 🔗 ждёт подтверждения · ⏸ неактивен",
@@ -486,7 +491,7 @@ _RU: dict[str, str] = {
     "admin.wh.set_off": "🌴 Выходной",
     "admin.wh.ask_break": "Напишите перерыв, например <code>13:00-14:00</code>, или без перерыва:",
     "admin.wh.no_break": "➡️ Без перерыва",
-    "admin.wh.bad_range": "Формат: <code>10:00-20:00</code> (начало раньше конца).",
+    "admin.wh.bad_range": "Формат: <code>10:00-20:00</code> (начало раньше конца; минуты 00, 15, 30 или 45).",
     "admin.wh.out_of_hours": "✅ Сохранено. ⚠️ Записи вне нового графика ({n}, не отменены):",
     # admin time off
     "admin.to.pick_target": "🌴 Для кого выходной?",
@@ -534,12 +539,12 @@ _RU: dict[str, str] = {
     "admin.cl.bonus_btn": "🎁 Бонус ±",
     "admin.cl.block_btn": "🚫 Заблокировать",
     "admin.cl.unblock_btn": "✅ Разблокировать",
-    "admin.cl.reset_btn": "♻️ Сбросить неявки",
+    "admin.cl.reset_btn": "♻️ Снять ограничение за неявки",
     "admin.cl.block_confirm": "Заблокировать {name}? Активные записи будут отменены.",
     "admin.cl.unblock_confirm": "Разблокировать {name}?",
     "admin.cl.blocked_ok": "🚫 Заблокирован. Отменено записей: {n}",
     "admin.cl.unblocked": "✅ Разблокирован.",
-    "admin.cl.reset_ok": "♻️ Счётчик неявок сброшен.",
+    "admin.cl.reset_ok": "♻️ Ограничение снято: прошлые неявки больше не требуют подтверждения записей. Общая история (число выше) сохраняется.",
     "admin.cl.ask_delta": "На сколько изменить бонус? Например: <code>+1</code> или <code>-2</code>",
     "admin.cl.ask_comment": "{delta} — напишите причину (обязательно):",
     "admin.cl.bonus_ok": "✅ Бонус изменён.",
@@ -666,6 +671,7 @@ _RU: dict[str, str] = {
     "err.invalid.service": "Эта услуга больше недоступна.",
     "err.invalid.env_admin": "Основного (.env) администратора нельзя снять через бота.",
     "err.invalid.self": "Нельзя снять права с самого себя.",
+    "err.invalid.blocked_user": "Пользователь заблокирован — сначала разблокируйте его.",
     "err.invalid.delta": "Баланс бонусов не может стать отрицательным.",
     "err.invalid.loyalty_mode": "Тип бонусов сейчас нельзя изменить.",
     "err.invalid.balances_exist": "У клиентов есть бонусные остатки — тип бонусов сейчас изменить нельзя.",

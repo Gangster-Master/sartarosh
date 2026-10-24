@@ -91,8 +91,9 @@ Make a backup first (see below), then:
 # Docker (migrations run automatically on start)
 git pull && docker compose up -d --build
 
-# Local / systemd
-git pull && .venv/bin/pip install -r requirements.lock && .venv/bin/python run.py --migrate
+# Local / systemd (ExecStart runs run.py --migrate: migrations apply on restart,
+# never under the running old code)
+git pull && .venv/bin/pip install -r requirements.lock && sudo systemctl restart sartarosh
 ```
 
 ### systemd (without Docker)

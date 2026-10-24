@@ -472,9 +472,7 @@ async def _wizard_data(
     return data
 
 
-async def _cleanup_contact(
-    bot: Bot, chat_id: int, state: FSMContext, roles: Any, lang: str
-) -> None:
+async def cleanup_contact(bot: Bot, chat_id: int, state: FSMContext, roles: Any, lang: str) -> None:
     data = await state.get_data()
     prompt_id = data.get("prompt_id")
     if prompt_id:
@@ -812,7 +810,7 @@ async def on_wiz(
     if a == "back":
         await _back(call, state, sm, user, roles, lang)
     elif a == "cancel":
-        await _cleanup_contact(call.bot, call.from_user.id, state, roles, lang)  # type: ignore[arg-type]
+        await cleanup_contact(call.bot, call.from_user.id, state, roles, lang)  # type: ignore[arg-type]
         await state.clear()
         await views.show_hub(call, state, sm, user, roles, lang, prefix=t(lang, "book.cancelled"))
     elif a == "skip_comment" and step == "comment":
@@ -834,7 +832,7 @@ async def _back(
 ) -> None:
     data = await state.get_data()
     if data.get("step") == "contact":
-        await _cleanup_contact(call.bot, call.from_user.id, state, roles, lang)  # type: ignore[arg-type]
+        await cleanup_contact(call.bot, call.from_user.id, state, roles, lang)  # type: ignore[arg-type]
     nav = list(data.get("nav") or [])
     if not nav:
         await state.clear()

@@ -201,7 +201,7 @@ async def test_auto_completed_has_no_review(world: World) -> None:
     start = L(D(0), "10:00")
     r = await book(world, c, start)
     async with write_tx(world.sm) as s:
-        await bookings.auto_complete_due(s, now=start + timedelta(hours=13))
+        await bookings.auto_complete_due(s, now=start + timedelta(hours=14))
     rows = await _rows(world, r.booking.id)
     assert K.REVIEW not in rows and K.RETURN in rows
 

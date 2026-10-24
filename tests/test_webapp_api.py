@@ -434,3 +434,23 @@ async def test_tomorrow_label(world: World, api: Api, clk: Clock) -> None:
     _, tg = await _client(world)
     st, body = await api.get(tg, "/api/booking/days")
     assert body["today"] == "2026-10-26" and body["days"][1]["is_tomorrow"] is True
+
+
+async def test_barber_ratings_public_in_mini_app(world: World, api: Api) -> None:
+    """Same public rating as the bot (rating_badge): avg + count, avg null before reviews."""
+    from tests.test_public_rating import _rated_visit
+
+    for day, rating in enumerate([5, 4, 4]):
+        await _rated_visit(world, day, rating)
+    other_id, _ = await world.new_barber("Bekzod")
+    _, tg = await _client(world)
+    st, body = await api.get(tg, "/api/barbers")
+    got = {b["id"]: b for b in body["barbers"]}
+    assert st == 200
+    assert (got[world.ali_id]["rating_avg"], got[world.ali_id]["rating_count"]) == (4.3, 3)
+    assert (got[other_id]["rating_avg"], got[other_id]["rating_count"]) == (None, 0)
+    st, body = await api.get(tg, f"/api/booking/barbers?service_id={world.svc30}")
+    got = {b["id"]: b for b in body["barbers"]}
+    assert st == 200
+    assert (got[world.ali_id]["rating_avg"], got[world.ali_id]["rating_count"]) == (4.3, 3)
+    assert (got[other_id]["rating_avg"], got[other_id]["rating_count"]) == (None, 0)

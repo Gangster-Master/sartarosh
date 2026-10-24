@@ -50,7 +50,8 @@ class Ticker:
         self._last_purge = 0.0
 
     async def tick(self) -> None:
-        for step in (self._expire, self._auto_complete, self._outbox, self._daily, self._purge):
+        # _daily before _auto_complete: the 23:00 digest asks the barber first (§4.10)
+        for step in (self._expire, self._daily, self._auto_complete, self._outbox, self._purge):
             try:
                 await step()
             except Exception:  # noqa: BLE001 - one failing step must not stop the others
@@ -74,6 +75,7 @@ class Ticker:
         for n in due:
             ok = False
             err = "not delivered"
+            self.notifier.flood_wait = 0.0
             try:
                 ok = bool(await self.notifier.due_notification(n))
             except Exception as e:  # noqa: BLE001
@@ -82,6 +84,10 @@ class Ticker:
             async with write_tx(self.sm) as s:
                 if ok:
                     await notifications.mark_sent(s, notification_id=n.id)
+                elif self.notifier.flood_wait:  # Telegram asked to wait: try again later
+                    await notifications.retry_later(
+                        s, notification_id=n.id, seconds=self.notifier.flood_wait
+                    )
                 else:
                     await notifications.mark_failed(s, notification_id=n.id, error=err)
 
@@ -148,6 +154,10 @@ class Ticker:
             return
         if size < 45 * 1024 * 1024:
             await self.notifier.send_document_to_env_admins(path, f"💾 {Path(path).name}")
+        else:  # over the Bot API upload limit: the file stays on the server only [D-6]
+            await self.notifier.alert_admins(
+                "admin.alert.backup_too_big", size_mb=size // (1024 * 1024), name=Path(path).name
+            )
 
     async def _purge(self) -> None:
         now = _time.monotonic()

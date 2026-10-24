@@ -151,6 +151,14 @@ async def card_view(
     rows = []
     if b.status == BookingStatus.PENDING and b.awaiting == Awaiting.BARBER:
         rows.extend(bkb.decision_kb(b.id, lang).inline_keyboard)
+    if (
+        b.status == BookingStatus.EXPIRED
+        and b.awaiting == Awaiting.BARBER
+        and b.expire_at is not None
+        and now <= b.expire_at + timedelta(minutes=int(shop.late_accept_grace_min))
+        and b.start_at > now
+    ):  # late accept inside the grace [C-B5]
+        rows.append([btn(t(lang, "barber.late_accept"), BookingCb(a="acc", id=b.id))])
     if b.status == BookingStatus.CONFIRMED:
         act = []
         if now >= b.start_at - timedelta(minutes=30):

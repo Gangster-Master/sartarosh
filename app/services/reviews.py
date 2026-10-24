@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.enums import BookingStatus
-from app.db.models import Review
+from app.db.enums import BookingSource, BookingStatus
+from app.db.models import Barber, Review
 from app.services import clock
 from app.services._common import load_booking
 from app.services.dto import ReviewResult
 from app.services.errors import InputError, InvalidTransitionError, PermissionDeniedError
+from app.services.settings import get_shop_settings
 
 LOW_RATING_MAX = 3
 
@@ -28,7 +29,18 @@ async def submit_rating(
             booking_id=booking_id,
             rating=existing.rating,
             is_low=existing.rating <= LOW_RATING_MAX,
+            created=False,
         )
+    # Ratings are public: only visits that surely happened, by real clients, count.
+    if b.auto_completed:  # nobody confirmed the visit; it may still flip to no-show [D-3]
+        raise InvalidTransitionError("auto-completed visit", current=b.status.value)
+    if b.source == BookingSource.MANUAL and b.visit_confirmed is not True:  # [D-2]
+        raise InvalidTransitionError("walk-in not confirmed by the client", current=b.status.value)
+    barber = await session.get(Barber, b.barber_id)
+    if barber is not None and barber.user_id == client_user_id:
+        raise PermissionDeniedError("a barber can't rate himself")
+    if not (await get_shop_settings(session)).reviews_enabled:
+        raise InvalidTransitionError("reviews disabled", current=b.status.value)
     try:
         rating = int(rating)
     except (TypeError, ValueError):

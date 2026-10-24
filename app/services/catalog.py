@@ -240,8 +240,19 @@ async def set_barber_services(
         .all()
     )
     existing = {r.service_id: r for r in rows}
+    # the menu only lists active services: keep a temporarily inactive one (and its price
+    # override) unless the whole offer is reset to "all active services"
+    inactive = set(
+        (
+            await session.execute(
+                select(Service.id).where(
+                    Service.id.in_(list(existing)), Service.is_active.is_(False)
+                )
+            )
+        ).scalars()
+    )
     for sid, row in existing.items():
-        if sid not in wanted:
+        if sid not in wanted and not (wanted and sid in inactive):
             await session.delete(row)
     for sid in wanted - set(existing):
         session.add(BarberService(barber_id=barber_id, service_id=sid))

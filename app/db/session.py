@@ -44,6 +44,10 @@ def _is_memory(url_str: str) -> bool:
     )
 
 
+def _py_lower(v: Any) -> Any:
+    return v.lower() if isinstance(v, str) else v
+
+
 def _install_sqlite_listeners(engine: AsyncEngine) -> None:
     sync_engine = engine.sync_engine
 
@@ -59,6 +63,8 @@ def _install_sqlite_listeners(engine: AsyncEngine) -> None:
             cur.execute("PRAGMA synchronous=NORMAL")
         finally:
             cur.close()
+        # SQLite's lower() is ASCII-only: a Unicode one for Cyrillic name search
+        dbapi_conn.create_function("py_lower", 1, _py_lower, deterministic=True)
 
     @event.listens_for(sync_engine, "begin")
     def _on_begin(conn: Any) -> None:

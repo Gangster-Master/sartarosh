@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import delete, func, insert, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -24,7 +24,7 @@ from app.db.enums import (
     CancelledBy,
     NotificationKind,
 )
-from app.db.models import Barber, Booking, BookingMessage, BookingSlot, Service, User
+from app.db.models import Barber, Booking, BookingMessage, BookingSlot, Review, Service, User
 from app.services import bonus as _bonus
 from app.services import clock, notifications
 from app.services._common import (
@@ -32,7 +32,7 @@ from app.services._common import (
     booking_dto,
     booking_dtos,
     decision_targets,
-    is_public,
+    is_bookable,
     load_barber,
     load_booking,
     load_user,
@@ -42,7 +42,12 @@ from app.services._common import (
     roles_for,
 )
 from app.services.audit import write_audit
-from app.services.catalog import _barbers_for_service_rows, resolve_service
+from app.services.catalog import (
+    _barbers_for_service_rows,
+    list_barber_services,
+    resolve_service,
+    shop_has_services,
+)
 from app.services.dto import (
     BookingCreated,
     BookingDTO,
@@ -74,7 +79,7 @@ from app.services.errors import (
 )
 from app.services.schedule import barber_windows
 from app.services.settings import ShopSettings, get_shop_settings
-from app.services.slots import active_count_on_day, slot_problem
+from app.services.slots import active_count_on_day, is_offered_start, slot_problem
 from app.services.users import get_client_stats, is_soft_blocked
 from app.services.validation import normalize_phone, validate_comment, validate_name
 
@@ -337,8 +342,16 @@ async def create_booking(
     # 5. candidates
     if barber_id is not None:
         barber = await session.get(Barber, barber_id)
-        if barber is None or not is_public(barber):
+        if barber is None or not await is_bookable(session, barber):
             raise BarberInactiveError("barber not bookable")
+    # the service step is skipped only when nothing is on offer (ARCHITECTURE Q2)
+    if (
+        service_id is None
+        and await shop_has_services(session)
+        and (barber_id is None or await list_barber_services(session, barber_id))
+    ):
+        raise InputError("service required", field="service")
+    if barber_id is not None:
         candidates = [barber]
     else:
         day = clock.to_local(start_at).date()
@@ -356,7 +369,7 @@ async def create_booking(
                 buffer_min=b.buffer_min,
                 now=now,
             )
-            if prob is None:
+            if prob is None and await is_offered_start(session, b, start_at):
                 load = await active_count_on_day(session, b.id, day)
                 ranked.append((load, b.sort_order or 0, b.id, b))
         if not ranked:
@@ -402,6 +415,8 @@ async def create_booking(
                     raise SlotTakenError("slot taken")
                 if prob is not None:
                     raise SlotUnavailableError("slot unavailable")
+                if barber_id is not None and not await is_offered_start(session, barber, start_at):
+                    raise SlotUnavailableError("start not on the barber's slot grid")
                 bonus_cost, final_price = 0, rs.price_uzs
                 if use_bonus:
                     q = await _bonus.quote_redeem(session, user_id=user.id, price_uzs=rs.price_uzs)
@@ -515,6 +530,8 @@ async def create_manual_booking(
 
     client_id: int | None = None
     if phone:
+        # never link a walk-in to its own barber or to the staff member typing it [S-01]
+        staff_ids = {actor_user_id} | ({barber.user_id} if barber.user_id is not None else set())
         matches = (
             (
                 await session.execute(
@@ -528,7 +545,7 @@ async def create_manual_booking(
             .scalars()
             .all()
         )
-        if len(matches) == 1:
+        if len(matches) == 1 and matches[0] not in staff_ids:
             client_id = matches[0]
 
     b = Booking(
@@ -609,28 +626,47 @@ async def list_decision_messages(
 # ------------------------------------------------------------------ barber decisions
 
 
-async def _late_accept_client_ok(
-    session: AsyncSession, b: Booking, s: ShopSettings, now: datetime
-) -> None:
-    """A late accept must not give the client an overlapping booking or exceed the
-    active-booking limit (the client may have rebooked elsewhere meanwhile)."""
+def _client_others(b: Booking):  # type: ignore[no-untyped-def]
+    """COUNT of the client's other ACTIVE bookings (by user or phone), or None."""
     conds = []
     if b.client_id is not None:
         conds.append(Booking.client_id == b.client_id)
     if b.client_phone:
         conds.append(Booking.client_phone == b.client_phone)
     if not conds:
-        return
-    client_cond = or_(*conds)
-    base = (
+        return None
+    return (
         select(func.count())
         .select_from(Booking)
-        .where(client_cond, Booking.id != b.id, Booking.status.in_(_ACTIVE))
+        .where(or_(*conds), Booking.id != b.id, Booking.status.in_(_ACTIVE))
     )
-    overlap = (
-        await session.execute(base.where(Booking.start_at < b.end_at, Booking.end_at > b.start_at))
-    ).scalar_one()
-    if overlap:
+
+
+async def _client_overlaps(
+    session: AsyncSession, b: Booking, start_at: datetime, end_at: datetime
+) -> bool:
+    """Would ``b`` at [start_at, end_at) overlap another ACTIVE booking of its client?"""
+    base = _client_others(b)
+    if base is None:
+        return False
+    stmt = base.where(Booking.start_at < end_at, Booking.end_at > start_at)
+    return bool((await session.execute(stmt)).scalar_one())
+
+
+async def _late_accept_client_ok(
+    session: AsyncSession, b: Booking, s: ShopSettings, now: datetime
+) -> None:
+    """A late accept must not give the client an overlapping booking or exceed the
+    active-booking limit (the client may have rebooked elsewhere meanwhile), and the
+    client must still be allowed to book."""
+    if b.client_id is not None:
+        client = await load_user(session, b.client_id, fresh=True)
+        if client.deleted_at is not None or client.is_blocked:
+            raise TooLateError("client can no longer book")
+    base = _client_others(b)
+    if base is None:
+        return
+    if await _client_overlaps(session, b, b.start_at, b.end_at):
         raise TooLateError("client already has another booking at this time")
     if b.source == BookingSource.BOT:
         active = (await session.execute(base.where(Booking.end_at > now))).scalar_one()
@@ -657,7 +693,26 @@ async def confirm_booking(
             raise _invalid(b)
         if now > b.expire_at + timedelta(minutes=s.late_accept_grace_min) or b.start_at <= now:
             raise TooLateError("grace period passed")
+        barber = await load_barber(session, b.barber_id)
+        if not await is_bookable(session, barber):
+            raise BarberInactiveError("barber not bookable")
         await _late_accept_client_ok(session, b, s, now)
+        # the slot may have closed meanwhile (time off, new hours) [B5]
+        prob = await slot_problem(
+            session,
+            barber_id=b.barber_id,
+            start_at=b.start_at,
+            duration_min=b.duration_min,
+            buffer_min=barber.buffer_min,
+            now=now,
+            ignore_lead_time=True,
+            ignore_booking_id=b.id,
+            check_horizon=False,
+        )
+        if prob == "taken":
+            raise SlotTakenError("slot taken")
+        if prob is not None:
+            raise SlotUnavailableError("slot unavailable")
         await _occupy(session, b)  # SlotTakenError if someone took it meanwhile [B5]
         b.cancelled_by = None
         b.cancel_reason = None
@@ -737,6 +792,9 @@ async def propose_time(
         raise SlotTakenError("slot taken")
     if prob is not None:
         raise SlotUnavailableError("slot unavailable")
+    new_end = new_start_at + timedelta(minutes=b.duration_min)
+    if await _client_overlaps(session, b, new_start_at, new_end):
+        raise ClientLimitError("client has another booking then", kind="overlap", limit=0)
     s = await get_shop_settings(session)
     await _release(session, b.id)
     if b.original_start_at is None:
@@ -783,6 +841,8 @@ async def answer_proposal(
     if accept:
         if (b.expire_at is not None and now >= b.expire_at) or b.start_at <= now:
             raise TooLateError("proposal expired")
+        if await _client_overlaps(session, b, b.start_at, b.end_at):
+            raise ClientLimitError("overlapping booking", kind="overlap", limit=0)
         b.status = BookingStatus.CONFIRMED
         b.awaiting = None
         b.decided_at = now
@@ -991,11 +1051,12 @@ async def mark_no_show(
             raise TooLateError("no-show flip window passed")
         reversed_amount = await _bonus.reverse_for_booking(session, booking_id=b.id)
         b.status = BookingStatus.NO_SHOW
+        await session.execute(delete(Review).where(Review.booking_id == b.id))  # [D-3]
         await session.flush()
         await notifications.cancel_for_booking(
             session,
             booking_id=b.id,
-            kinds=[NK.RETURN, NK.REVIEW, NK.MANUAL_VISIT_CONFIRM],
+            kinds=[NK.RETURN, NK.REVIEW, NK.MANUAL_VISIT_CONFIRM, NK.COMPLETED_THANKS],
             now=now,
         )
     else:
@@ -1051,7 +1112,11 @@ async def confirm_manual_visit(
     referral_to: int | None = None
     if yes:
         earned, welcome, referral_to = await _bonus.award_for_completion(session, booking_id=b.id)
+        # the visit is real now: the usual return / review pushes apply
+        await notifications.schedule_for_booking(session, booking_id=b.id, now=now)
     else:
+        await session.execute(delete(Review).where(Review.booking_id == b.id))  # [D-2]
+        await notifications.cancel_for_booking(session, booking_id=b.id, now=now)
         await write_audit(
             session,
             actor_user_id=client_user_id,
@@ -1110,7 +1175,10 @@ async def expire_due_pending(
 async def auto_complete_due(
     session: AsyncSession, *, now: datetime | None = None
 ) -> list[CompleteResult]:
-    """Internal: CONFIRMED with end_at + auto_complete_after_hours <= now -> COMPLETED (auto)."""
+    """Internal: CONFIRMED -> COMPLETED (auto) once end_at + auto_complete_after_hours has
+    passed AND the nightly digest that asks the barber first has run, plus
+    DIGEST_ANSWER_WINDOW to answer it (§4.10): a morning visit is not closed before
+    00:00 (digest 23:00 + 1 h) even if the hours have passed."""
     now = _now(now)
     s = await get_shop_settings(session)
     limit = now - timedelta(hours=s.auto_complete_after_hours)
@@ -1125,7 +1193,24 @@ async def auto_complete_due(
         .scalars()
         .all()
     )
-    return [await _complete(session, b, auto=True, now=now) for b in rows]
+    return [
+        await _complete(session, b, auto=True, now=now)
+        for b in rows
+        if _first_digest_after(b.end_at, s.nightly_check_time) + DIGEST_ANSWER_WINDOW <= now
+    ]
+
+
+# The barber gets this long to answer the nightly digest before its visits auto-complete.
+DIGEST_ANSWER_WINDOW = timedelta(hours=1)
+
+
+def _first_digest_after(end_at: datetime, nightly: time) -> datetime:
+    """The first nightly digest run (local ``nightly`` time) at or after ``end_at``."""
+    day = clock.to_local(end_at).date()
+    at = clock.local_dt(day, nightly)
+    if at < clock.ensure_aware(end_at):
+        at = clock.local_dt(day + timedelta(days=1), nightly)
+    return at
 
 
 # ------------------------------------------------------------------ queries
@@ -1205,7 +1290,7 @@ async def get_last_completed(session: AsyncSession, *, client_user_id: int) -> R
     if b is None:
         return None
     barber = await session.get(Barber, b.barber_id)
-    if barber is None or not is_public(barber):
+    if barber is None or not await is_bookable(session, barber):
         return None
     service_id: int | None = None
     service_name: str | None = None
@@ -1285,7 +1370,9 @@ async def list_bookings(
             conds.append(Booking.client_phone.like(f"%{digits}"))
         else:
             like = "%" + q.lower().replace("%", "").replace("_", "") + "%"
-            conds.append(func.lower(Booking.client_name).like(like))
+            # SQLite's lower() is ASCII-only; py_lower (app.db.session) handles Cyrillic
+            lower = func.lower if await _is_postgres(session) else func.py_lower
+            conds.append(lower(Booking.client_name).like(like))
     total = (
         await session.execute(select(func.count()).select_from(Booking).where(*conds))
     ).scalar_one()

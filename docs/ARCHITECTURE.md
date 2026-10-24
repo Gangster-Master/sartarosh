@@ -203,6 +203,7 @@ class NotificationKind(str, Enum):
     RETURN="ret"                # "time for a haircut" [#37]
     REVIEW="rev"                # [P2] rating request [#54]
     MANUAL_VISIT_CONFIRM="mcf"  # "Bugun Ali'da edingizmi?" for manual bookings [D2]
+    COMPLETED_THANKS="thx"      # "thanks for the visit" after an auto-completion, sent by day
 ```
 
 ### 3.2 Tables
@@ -450,7 +451,8 @@ class UserDTO: id: int; tg_id: int; tg_username: str | None; first_name: str; fu
 class UserContext: user: UserDTO; roles: Roles; barber_reachable: bool | None   # for UserMiddleware
 
 class BarberDTO: id: int; user_id: int | None; tg_id: int | None; display_name: str
-    photo_file_id: str | None; bio: str | None; is_active: bool; is_public: bool; sort_order: int
+    photo_file_id: str | None; bio: str | None; is_active: bool; sort_order: int
+    is_public: bool   # active, linked AND has working hours (clients can book him) [D-1]
     slot_step_min: int; buffer_min: int; auto_accept: bool; is_reachable: bool
     invite_token: str | None; invite_expires_at: datetime | None
     pending_link_user_id: int | None
@@ -632,6 +634,8 @@ async def delete_me(session: AsyncSession, *, user_id: int, now: datetime | None
     # cancels the user's ACTIVE bookings (CANCELLED_BY_CLIENT, reason "deleted"), returns them;
     # anonymises: tg_id=-id, tg_username/full_name/phone=NULL, first_name='', deleted_at=now;
     # bookings.client_name='—', client_phone=NULL for all the user's bookings; keeps counts and ledger [H1]
+    # a barber's own profile: its future ACTIVE bookings are cancelled too (CANCELLED_BY_BARBER,
+    # reason "barber_inactive") and returned; the bot tells the clients and the admins (barber_left)
 # admin
 async def find_users_by_phone(session: AsyncSession, *, actor_user_id: int, phone_query: str) -> list[UserDTO]
     # admin only; digits suffix match (>= 4 digits); max 10; audit "client.search" [H2]
@@ -858,7 +862,7 @@ async def compute_expire_at(session: AsyncSession, *, barber_id: int, created_at
 - `client_phone` goes through `normalize_phone` when given.
 - `client_id` is set only if **exactly one** user has `phone == client_phone AND phone_verified` [D3]. Otherwise it is NULL.
 - The service writes an audit entry `booking.manual_create`.
-- No client pushes are sent for manual bookings, except `mcf` after completion.
+- No client pushes are sent for manual bookings, except `mcf` after completion [B9]; `ret`/`rev` only after the client confirmed the visit. A walk-in is never linked to its own barber or to the staff member typing it.
 
 **`compute_expire_at` [B1][B2]:**
 ```
@@ -885,7 +889,7 @@ expire_at = min(expire_at, start_at)                            # never after st
 | PENDING (either) | EXPIRED | expire_due_pending | system | `_release`; cancel notifications; `cancelled_by=SYSTEM` |
 | PENDING, CONFIRMED | CANCELLED_BY_CLIENT | cancel_by_client | client | `start_at > now` else `TooLateError`; **late only if CONFIRMED** and `start_at - now < free_cancel_hours` → `late_cancel=True`, `late_cancel_count += 1` [D6]; `_release` |
 | PENDING, CONFIRMED | CANCELLED_BY_BARBER | cancel_by_staff, add_time_off, deactivate_barber, set_blocked | barber/admin | reason required; `_release`; cancel notifications |
-| CONFIRMED | COMPLETED | complete_booking (allowed from `start_at - 30 min`), auto_complete_due | barber/admin, system | `_release`; `completed_at`; bonus (below); schedule `ret`, `rev`, and `mcf` for manual bookings |
+| CONFIRMED | COMPLETED | complete_booking (allowed from `start_at - 30 min`), auto_complete_due | barber/admin, system | `_release`; `completed_at`; bonus (below); schedule `ret`, `rev` (BOT), `thx` (auto), or only `mcf` for manual bookings |
 | CONFIRMED | NO_SHOW | mark_no_show | barber/admin | `now >= start_at + 15 min` else `TooEarlyError`; `_release`; `no_show_count += 1` |
 | COMPLETED (auto_completed, `now <= completed_at + noshow_flip_window_hours`) | NO_SHOW | mark_no_show | barber/admin | `bonus.reverse_for_booking`; `no_show_count += 1`; cancel `ret`/`rev`. Past the window: `TooLateError` [#30] |
 
@@ -899,9 +903,11 @@ Permissions:
 3. If `source == MANUAL`, earning waits: `needs_visit_confirm=True` and `mcf` is scheduled (only when `client_id` is set). Otherwise call `bonus.award_for_completion`.
 4. Return `CompleteResult`.
 
-`confirm_manual_visit(yes=True)` awards through `bonus.award_for_completion`. `yes=False` writes the audit entry `manual_visit_denied`, and the bot alerts the admins [D2]. Every manual completion is audited as `booking.manual_complete`.
+`confirm_manual_visit(yes=True)` awards through `bonus.award_for_completion` and then schedules `ret`/`rev` (the visit is real now). `yes=False` writes the audit entry `manual_visit_denied`, cancels every unclaimed push of the booking and deletes a review of it, and the bot alerts the admins [D2]. A second, different answer changes nothing and the bot says the first answer stands. Every manual completion is audited as `booking.manual_complete`.
 
-`auto_complete_due` selects CONFIRMED bookings with `end_at + auto_complete_after_hours <= now` and completes them with `auto=True`. The nightly digest at 23:00 asks the barber first.
+`auto_complete_due` completes (with `auto=True`) a CONFIRMED booking once `end_at + auto_complete_after_hours <= now` **and** the first nightly digest at or after `end_at` (local `nightly_check_time`) has run plus `DIGEST_ANSWER_WINDOW` (1 h), so the 23:00 digest always asks the barber first and he has an hour to answer, even for a morning visit (it closes at 00:00 at the earliest). The tick runs the daily jobs before auto-completion. The client's "thanks" push of an auto-completion goes through the outbox (`thx`, at `clamp_to_daytime(now)`), never at night.
+
+A late accept (EXPIRED → CONFIRMED inside `late_accept_grace_min`) re-checks everything a new booking would: the barber is public, the client is not deleted or blocked, no overlap with the client's other bookings or the active limit, and the full `slot_problem` (time off, hours; lead time and horizon ignored). `propose_time`, `answer_proposal(accept)` and `list_proposal_slots` refuse or skip a time that overlaps another ACTIVE booking of the client.
 
 ### 4.12 `app/services/bonus.py`
 ```python
@@ -937,6 +943,8 @@ async def schedule_for_booking(session: AsyncSession, *, booking_id: int, now: d
     # COMPLETED: ret at clamp_to_daytime(start + return_reminder_weeks) if weeks > 0 and client_id;
     #            rev at clamp_to_daytime(end + review_delay_hours) if reviews_enabled, client_id, not auto_completed;
     #            mcf at now if source=MANUAL and client_id
+    #            walk-ins (source=MANUAL) get ONLY mcf until the client answers "yes" [B9];
+    #            then ret/rev as above. thx at clamp_to_daytime(now) if auto_completed and source=BOT
     # upsert by (booking_id, kind); never reschedules a row that has claimed_at set
 async def cancel_for_booking(session: AsyncSession, *, booking_id: int, kinds: list[NotificationKind] | None = None,
                              now: datetime | None = None) -> None      # internal; unclaimed rows only
@@ -947,7 +955,14 @@ async def claim_due(session: AsyncSession, *, limit: int = 50, now: datetime | N
     #             ret now > send_at+3d; rev now > send_at+24h; mcf now > send_at+24h
     # INVALID: r24/r2 need CONFIRMED and start_at > now (r2 also client_ack_at IS NULL);
     #          rping needs PENDING awaiting BARBER; ret needs no newer COMPLETED and no ACTIVE booking of client;
-    #          rev needs no review; mcf needs visit_confirmed IS NULL; client-facing kinds need client not deleted
+    #          rev needs no review; mcf needs visit_confirmed IS NULL; thx needs COMPLETED;
+    #          client-facing kinds need client not deleted and not blocked; ret needs a public barber;
+    #          ret/rev of a walk-in need visit_confirmed = true;
+    #          the CURRENT settings apply: r24/r2/rev off or return_reminder_weeks = 0 cancel queued rows
+async def schedule_decision_retry(session: AsyncSession, *, booking_id: int, now: datetime | None = None) -> bool
+    # internal: no decision message reached anyone at creation → rping at now + pending_reping_min
+async def retry_later(session: AsyncSession, *, notification_id: int, seconds: float) -> None
+    # internal: a long RetryAfter → unclaim the row, send_at = now + seconds
 async def mark_sent(session: AsyncSession, *, notification_id: int, now: datetime | None = None) -> None   # internal
 async def mark_failed(session: AsyncSession, *, notification_id: int, error: str) -> None                  # internal
     # attempts += 1, last_error; the row stays claimed (at most once) [A4]
@@ -957,7 +972,11 @@ async def mark_failed(session: AsyncSession, *, notification_id: int, error: str
 ```python
 # reviews.py
 async def submit_rating(session: AsyncSession, *, booking_id: int, client_user_id: int, rating: int) -> ReviewResult
-    # booking COMPLETED and client owns it; 1..5; one per booking (repeat → returns existing, idempotent)
+    # booking COMPLETED and client owns it; 1..5; one per booking (repeat → returns existing with
+    # created=False, idempotent; the low-rating alert goes out only when created). Ratings are public,
+    # so refused: auto-completed visits [D-3], walk-ins the client has not confirmed [D-2], the barber
+    # rating his own visit [S-01], reviews_enabled=false. The public average counts only reviews of
+    # such visits; a no-show flip or a "no" walk-in answer deletes the review.
 
 # fsm_store.py   (used only by app/bot/fsm_storage.py; each call runs in its own short tx opened by the storage)
 async def get_record(session: AsyncSession, key: str) -> tuple[str | None, dict]
@@ -982,7 +1001,7 @@ def backup_sqlite(db_path: Path, backup_dir: Path, *, keep: int = 14, now: datet
     # sqlite3 online backup API (src.backup(dst)) → bot-YYYY-MM-DD.db, then PRAGMA integrity_check on the copy;
     # deletes oldest beyond keep; returns path. CLI prints the restore command (stop bot; cp backup data/bot.db).
 ```
-The tick runs it daily at `backup_time` in `asyncio.to_thread`, outside any transaction, and then sends the file to the env admins as a document if it is under 45 MB.
+The tick runs it daily at `backup_time` in `asyncio.to_thread`, outside any transaction, and then sends the file to the env admins as a document if it is under 45 MB; a bigger file stays on the server and the admins get `admin.alert.backup_too_big` [D-6].
 
 ---
 
@@ -1195,7 +1214,7 @@ Rules:
 - The notifier opens its own short `read_tx` or `write_tx` only to load data or record message ids. It never sends inside a transaction.
 - On `TelegramForbiddenError` to a barber: `set_reachable(False)` in a `write_tx`, then alert the admins.
 - On `TelegramForbiddenError` to a client: log it only.
-- On `TelegramRetryAfter`: sleep `retry_after`, retry once.
+- On `TelegramRetryAfter` up to 5 s: sleep `retry_after` **outside** the concurrency semaphore, retry once. A longer one is not waited out [D-7]: the send fails, `notifier.flood_wait` is set, and the outbox step reschedules that row (`retry_later`) instead of marking it failed.
 - `TelegramBadRequest` "message is not modified" / "message to edit not found" is ignored.
 - Global pacing: `asyncio.Semaphore(20)`, at most 25 messages per second.
 - Every message text is localised with the **recipient's** `lang`.
@@ -1203,12 +1222,13 @@ Rules:
 ### 6.5 `scheduler.py`
 One `AsyncIOScheduler` interval job, `tick`, every `scheduler_tick_seconds`, with `max_instances=1` and `coalesce=True`. There are no cron jobs [C4]. Each step uses its own short transaction:
 1. `write_tx`: `expired = expire_due_pending()`. After commit, `notifier.booking_expired` for each.
-2. `write_tx`: `done = auto_complete_due()`. After commit, `notifier.booking_completed` for each.
-3. `write_tx`: `due = claim_due(limit=50)`. After commit, for each: `ok = await notifier.due_notification(n)`, then `write_tx` → `mark_sent` or `mark_failed` [A2][A4].
-4. Daily jobs, each guarded by a marker:
+2. Daily jobs (below) — before auto-completion, so the nightly digest asks first.
+3. `write_tx`: `done = auto_complete_due()`. After commit, `notifier.booking_completed` for each.
+4. `write_tx`: `due = claim_due(limit=50)`. After commit, for each: `ok = await notifier.due_notification(n)`, then `write_tx` → `mark_sent`, `retry_later` (long RetryAfter) or `mark_failed` [A2][A4].
+   Daily jobs, each guarded by a marker:
    - The job runs if local now is at or after `HH:MM` and `get_marker("_job.<name>") != str(local_today)`.
    - Order inside the job: `set_marker` in a `write_tx`, commit, then run. This makes the job at most once a day.
-   - The morning summary is skipped (but marked) when local now is later than `daily_summary_time + 3h`.
+   - The morning summary is skipped (but marked) when local now is later than `daily_summary_time + 3h`. It goes to every active barber who works that day, also with no bookings (`notify.morning_empty`); the header counts confirmed visits, unanswered requests are listed with ⏳. The nightly digest of an inactive, unlinked or unreachable barber goes to the admins.
    - The jobs are `morning`, `nightly` and `backup`.
 5. Once per hour: `fsm_store.purge_older_than(7)`.
 

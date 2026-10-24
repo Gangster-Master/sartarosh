@@ -37,6 +37,10 @@ export function fill(el, ...kids) { append(clear(el), kids); return el; }
 export function fmtNum(n) { return String(Math.round(n || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ' '); }
 export function fmtPrice(n) { return `${fmtNum(n)} so'm`; }
 export function fmtDur(m) { return `${m} daq`; }
+// Public rating, e.g. "⭐4.8 (12)"; `empty` while the barber has no ratings yet.
+export function fmtRating(b, empty = '') {
+  return b && b.rating_count ? `⭐${Number(b.rating_avg).toFixed(1)} (${b.rating_count})` : empty;
+}
 export function initials(name) {
   return (name || '?').trim().split(/\s+/).slice(0, 2).map((p) => p[0] || '').join('').toUpperCase() || '?';
 }

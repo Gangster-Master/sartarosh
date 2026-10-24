@@ -478,8 +478,11 @@ Response:
 
 ```json
 {"barbers": [{"id", "name", "bio", "photo_url": "/api/barbers/2/photo?v=<8 hex of sha1(file_id)>" | null,
+              "rating_avg": 4.8 | null, "rating_count": 12,
               "services": [{"service_id", "name", "duration_min", "price_uzs"}]}]}
 ```
+
+`rating_avg`/`rating_count` are the public rating from `BarberDTO` (same numbers as the bot's `rating_badge`); `rating_avg` is `null` while `rating_count == 0`. The UI shows `⭐4.8 (12)` or `⭐ Hali baho yo'q` on the barber card, and the badge (only when rated) in the booking wizard's barber rows.
 
 #### `GET /api/barbers/{id}/photo`
 
@@ -525,7 +528,7 @@ Response:
 ```json
 {
   "any": {"available": true, "price_uzs": 50000, "price_varies": true, "duration_min": 30},
-  "barbers": [{"id", "name", "photo_url", "price_uzs", "duration_min"}]
+  "barbers": [{"id", "name", "bio", "photo_url", "rating_avg", "rating_count", "price_uzs", "duration_min"}]
 }
 ```
 

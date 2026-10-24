@@ -1,5 +1,5 @@
 // Booking wizard: service -> barber -> date/slot -> comment -> phone -> name -> confirm -> result.
-import { h, clear, fill, skeleton, errorBox, empty, row, avatar, fmtPrice, fmtDur, toast, alertMsg, bookingCard } from '../ui.js';
+import { h, clear, fill, skeleton, errorBox, empty, row, avatar, fmtPrice, fmtDur, fmtRating, toast, alertMsg, bookingCard } from '../ui.js';
 import { get, post, qs, uuid } from '../api.js';
 import { setMainButton, haptic, closingConfirmation, openLink, requestWriteAccess, nativeConfirm } from '../tg.js';
 import { session, setBackInterceptor, back as routerBack, reset } from '../router.js';
@@ -156,7 +156,12 @@ export function render(root, { query }) {
       if (st.barber_fixed) {
         const b = list.find((x) => x.id === st.barber_id);
         if (b) { st.barber = b; return false; }
-        toast("Bu usta tanlangan xizmatni ko'rsatmaydi", 'warn');
+        if (!cache.allBarbers) {
+          try { cache.allBarbers = (await get('/api/barbers')).barbers || []; } catch (e) { cache.allBarbers = []; }
+        }
+        // not in the public list at all (inactive, or no working hours): say so plainly
+        const known = cache.allBarbers.some((x) => x.id === st.barber_id);
+        toast(known ? "Bu usta tanlangan xizmatni ko'rsatmaydi" : 'Bu usta hozir navbat qabul qilmaydi.', 'warn');
         st.barber_fixed = false; st.barber_id = undefined; st.barber = null;
       }
       if (!list.length) {
@@ -176,7 +181,7 @@ export function render(root, { query }) {
       }
       for (const b of list) {
         rows.push(row({
-          lead: avatar(b.name, b.photo_url), title: b.name, sub: fmtDur(b.duration_min), right: fmtPrice(b.price_uzs),
+          lead: avatar(b.name, b.photo_url), title: b.name, sub: [fmtDur(b.duration_min), fmtRating(b)].filter(Boolean).join(' · '), right: fmtPrice(b.price_uzs),
           cls: st.barber_id === b.id ? 'selected' : '',
           onClick: () => { haptic.select(); pickBarber(b); next('barber'); },
         }));

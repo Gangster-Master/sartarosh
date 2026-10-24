@@ -9,10 +9,11 @@ from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, func, not_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_config
+from app.db.enums import BookingSource, BookingStatus
 from app.db.models import Barber, Booking, Review, User, WorkingHours
 from app.services import clock
 from app.services.dto import BarberDTO, BookingDTO, DecisionTarget, Roles, UserDTO
@@ -142,7 +143,36 @@ async def admin_chat_ids(session: AsyncSession) -> list[tuple[int, str]]:
 
 
 def is_public(b: Barber) -> bool:
+    """Active and linked. Clients also need working hours: see ``is_bookable``."""
     return bool(b.is_active and b.user_id is not None)
+
+
+async def _ids_with_hours(session: AsyncSession, barber_ids: Iterable[int]) -> set[int]:
+    ids = list(barber_ids)
+    if not ids:
+        return set()
+    return set(
+        (
+            await session.execute(
+                select(WorkingHours.barber_id).where(WorkingHours.barber_id.in_(ids)).distinct()
+            )
+        ).scalars()
+    )
+
+
+async def is_bookable(session: AsyncSession, b: Barber) -> bool:
+    """Public for clients: active, linked and with at least one working day [D-1]."""
+    return is_public(b) and bool(await _ids_with_hours(session, [b.id]))
+
+
+def countable_review() -> list[Any]:
+    """SQL conditions on Booking: the visit surely happened, so its review is public
+    (COMPLETED, not auto-completed, a walk-in only after the client confirmed it)."""
+    return [
+        Booking.status == BookingStatus.COMPLETED,
+        Booking.auto_completed.is_not(True),
+        not_(and_(Booking.source == BookingSource.MANUAL, Booking.visit_confirmed.is_not(True))),
+    ]
 
 
 async def barber_dtos(session: AsyncSession, barbers: Sequence[Barber]) -> list[BarberDTO]:
@@ -159,11 +189,13 @@ async def barber_dtos(session: AsyncSession, barbers: Sequence[Barber]) -> list[
         for bid, avg, cnt in (
             await session.execute(
                 select(Review.barber_id, func.avg(Review.rating), func.count())
-                .where(Review.barber_id.in_(barber_ids))
+                .join(Booking, Booking.id == Review.booking_id)
+                .where(Review.barber_id.in_(barber_ids), *countable_review())
                 .group_by(Review.barber_id)
             )
         ).all():
             ratings[bid] = (round(float(avg), 1), int(cnt))
+    with_hours = await _ids_with_hours(session, barber_ids)
     return [
         BarberDTO(
             id=b.id,
@@ -173,7 +205,7 @@ async def barber_dtos(session: AsyncSession, barbers: Sequence[Barber]) -> list[
             photo_file_id=b.photo_file_id,
             bio=b.bio,
             is_active=bool(b.is_active),
-            is_public=is_public(b),
+            is_public=is_public(b) and b.id in with_hours,
             sort_order=b.sort_order or 0,
             slot_step_min=b.slot_step_min,
             buffer_min=b.buffer_min,

@@ -305,6 +305,7 @@ async def get_barbers(request: web.Request, ctx: UserContext) -> web.Response:
                     "name": b.display_name,
                     "bio": b.bio,
                     "photo_url": ser.photo_url(b),
+                    **ser.rating_json(b),
                     "services": [
                         {
                             "service_id": rs.service_id,
@@ -331,7 +332,7 @@ async def get_barber_photo(request: web.Request) -> web.StreamResponse:
             b = await barbers.get_barber(s, bid)
     except NotFoundError:
         raise ApiError("not_found", 404) from None
-    if not (b.is_active and b.is_public and b.photo_file_id):
+    if not (b.is_active and b.user_id is not None and b.photo_file_id):
         raise ApiError("not_found", 404)
     data = await request.app[PHOTOS_KEY].get(b.photo_file_id)
     if not data:
@@ -409,6 +410,7 @@ async def get_booking_barbers(request: web.Request, ctx: UserContext) -> web.Res
                     "name": b.display_name,
                     "bio": b.bio,
                     "photo_url": ser.photo_url(b),
+                    **ser.rating_json(b),
                     "price_uzs": rs.price_uzs,
                     "duration_min": rs.duration_min,
                 }

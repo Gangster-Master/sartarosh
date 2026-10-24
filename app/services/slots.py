@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.enums import ACTIVE_STATUSES
 from app.db.models import Barber, Booking
 from app.services import clock
-from app.services._common import is_public, load_booking, require_barber_or_admin
+from app.services._common import is_bookable, load_booking, require_barber_or_admin
 from app.services.catalog import _barbers_for_service_rows, resolve_service
 from app.services.dto import DayAvailability, Interval, WorkingHoursDTO
 from app.services.errors import InputError
@@ -83,6 +83,21 @@ async def _blocks_for_day(
     ) + await time_off_blocks(session, barber_id, s, e)
 
 
+async def is_offered_start(session: AsyncSession, barber: Barber, start_at: datetime) -> bool:
+    """Internal: is ``start_at`` a start the app/bot can offer (working start + k * slot
+    step, or the end of a busy block / the break)? Availability is slot_problem's job."""
+    day = clock.to_local(start_at).date()
+    hours = (await hours_map(session, barber.id)).get(day.weekday())
+    if hours is None:
+        return False
+    ws = clock.local_dt(day, hours.start_time)
+    if start_at >= ws and (start_at - ws) % timedelta(minutes=barber.slot_step_min) == timedelta(0):
+        return True
+    if hours.break_end is not None and start_at == clock.local_dt(day, hours.break_end):
+        return True
+    return any(b.end == start_at for b in await _blocks_for_day(session, barber.id, day))
+
+
 async def _free_for_barber(
     session: AsyncSession,
     barber: Barber,
@@ -128,7 +143,7 @@ async def get_free_slots(
 ) -> list[datetime]:
     now = clock.ensure_aware(now) if now else clock.now_utc()
     barber = await session.get(Barber, barber_id)
-    if barber is None or not is_public(barber):
+    if barber is None or not await is_bookable(session, barber):
         return []
     return await _free_for_barber(session, barber, service_id, day, now)
 
@@ -159,7 +174,7 @@ async def get_available_days(
         barbers = await _barbers_for_service_rows(session, service_id)
     else:
         b = await session.get(Barber, barber_id)
-        barbers = [b] if b is not None and is_public(b) else []
+        barbers = [b] if b is not None and await is_bookable(session, b) else []
     hours = {b.id: await hours_map(session, b.id) for b in barbers}
     out: list[DayAvailability] = []
     for i in range(s.booking_horizon_days):
@@ -283,6 +298,27 @@ async def list_proposal_slots(
     s = await get_shop_settings(session)
     first_day = clock.to_local(booking.start_at).date()
     last_day = first_day + timedelta(days=2)
+    # the client's other ACTIVE bookings: a proposal must not overlap them
+    conds = []
+    if booking.client_id is not None:
+        conds.append(Booking.client_id == booking.client_id)
+    if booking.client_phone:
+        conds.append(Booking.client_phone == booking.client_phone)
+    busy: list[tuple[datetime, datetime]] = []
+    if conds:
+        busy = [
+            (clock.ensure_aware(a), clock.ensure_aware(z))
+            for a, z in (
+                await session.execute(
+                    select(Booking.start_at, Booking.end_at).where(
+                        or_(*conds),
+                        Booking.id != booking.id,
+                        Booking.status.in_(list(ACTIVE_STATUSES)),
+                    )
+                )
+            ).all()
+        ]
+    dur = timedelta(minutes=booking.duration_min)
     out: list[datetime] = []
     for i in range(3):
         day = first_day + timedelta(days=i)
@@ -301,7 +337,7 @@ async def list_proposal_slots(
             min_lead_min=s.min_lead_min,
             last_bookable_day=last_day,
         ):
-            if t == booking.start_at:
+            if t == booking.start_at or any(_overlap(t, t + dur, a, z) for a, z in busy):
                 continue
             out.append(t)
             if len(out) >= limit:

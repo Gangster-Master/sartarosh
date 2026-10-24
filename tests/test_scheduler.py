@@ -110,7 +110,15 @@ async def test_auto_complete_tick(
 ) -> None:
     c = await world.new_client()
     r = await book(world, c, L(D(0), "10:00"))
-    Clock(monkeypatch, L(D(0), "22:31"))
+    clk = Clock(monkeypatch, L(D(0), "22:31"))  # end + 12 h, but the digest asks first
+    await Ticker(H.bot, world.sm, H.notifier).tick()
+    async with read_tx(world.sm) as s:
+        assert (await bookings.get_booking(s, r.booking.id)).status == BookingStatus.CONFIRMED
+    clk.now = L(D(0), "23:01")  # the 23:00 digest asks the barber
+    await Ticker(H.bot, world.sm, H.notifier).tick()
+    async with read_tx(world.sm) as s:
+        assert (await bookings.get_booking(s, r.booking.id)).status == BookingStatus.CONFIRMED
+    clk.now = L(D(1), "00:01")  # 1 h to answer the digest has passed: auto-complete
     await Ticker(H.bot, world.sm, H.notifier).tick()
     async with read_tx(world.sm) as s:
         b = await bookings.get_booking(s, r.booking.id)

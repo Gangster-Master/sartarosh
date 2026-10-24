@@ -201,7 +201,11 @@ async def on_client_action(
                     s, booking_id=bid, client_user_id=user.id, yes=a == "vy"
                 )
                 st = await bonus.get_bonus_status(s, user.id, recent_limit=0) if a == "vy" else None
-            if a == "vy":
+            if r.booking.visit_confirmed is not (a == "vy"):
+                # the other answer was given earlier (another copy of the prompt): it stands
+                key = "my.visit_already_yes" if r.booking.visit_confirmed else "my.visit_already_no"
+                await _replace(call, t(lang, key))
+            elif a == "vy":
                 lines = [t(lang, "my.visit_yes")]
                 if st is not None and st.enabled:
                     if st.mode == LoyaltyMode.STAMPS:

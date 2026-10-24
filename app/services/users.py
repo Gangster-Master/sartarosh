@@ -24,6 +24,7 @@ from app.services._common import (
     user_dto,
 )
 from app.services.audit import write_audit
+from app.services.bonus import _same_person_ids
 from app.services.dto import (
     BookingDTO,
     ClientProfile,
@@ -202,12 +203,14 @@ async def is_soft_blocked(
     since = now - timedelta(days=s.soft_block_window_days)
     if u.no_show_reset_at is not None and u.no_show_reset_at > since:
         since = u.no_show_reset_at
+    # deleted accounts with the same verified phone count too (no /delete_me + rejoin reset)
+    person_ids = await _same_person_ids(session, u)
     no_shows = (
         await session.execute(
             select(func.count())
             .select_from(Booking)
             .where(
-                Booking.client_id == user_id,
+                Booking.client_id.in_(person_ids),
                 Booking.status == BookingStatus.NO_SHOW,
                 Booking.start_at >= since,
             )
@@ -222,7 +225,7 @@ async def is_soft_blocked(
                 select(func.count())
                 .select_from(Booking)
                 .where(
-                    Booking.client_id == user_id,
+                    Booking.client_id.in_(person_ids),
                     Booking.late_cancel.is_(True),
                     Booking.start_at >= since,
                 )
@@ -284,6 +287,23 @@ async def delete_me(
             now=now,
         )
         cancelled_rows.append(b)
+    # A barber leaving: his clients' future bookings can't happen; cancel them like a
+    # deactivation does (the caller tells the clients and the admins).
+    from app.services.barbers import _future_active
+
+    for barber in (
+        await session.execute(select(Barber).where(Barber.user_id == user_id))
+    ).scalars():
+        for b in await _future_active(session, barber.id, now):
+            await _bookings._cancel(
+                session,
+                b,
+                status=BookingStatus.CANCELLED_BY_BARBER,
+                by=_bookings.CancelledBy.BARBER,
+                reason="barber_inactive",
+                now=now,
+            )
+            cancelled_rows.append(b)
     result = await booking_dtos(session, cancelled_rows)
 
     # Unlink a barber profile, if any (keeps the barber row and history).
@@ -446,6 +466,8 @@ async def set_admin(
     u = await load_user(session, user_id)
     if u.deleted_at is not None:
         raise NotFoundError("user deleted", entity="user", id=user_id)
+    if is_admin and u.is_blocked:  # staff can't be blocked, so the blocked can't be staff [A7]
+        raise InputError("user is blocked", field="blocked_user")
     if not is_admin:
         if u.tg_id in get_config().admin_ids:
             raise InputError("env admin cannot be demoted", field="env_admin")

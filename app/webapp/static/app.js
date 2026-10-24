@@ -1,7 +1,6 @@
 // Entry module: boot, Telegram glue, global error handling, first route.
 import { tg, initTg, hasInitData, startParam } from './tg.js';
 import { get, setGlobalErrorHandler } from './api.js';
-import { toast } from './ui.js';
 import { initRouter, startAt, reset, showFatal, session, refreshMe, currentPath } from './router.js';
 
 function onGlobalError(err) {
@@ -12,7 +11,6 @@ function onGlobalError(err) {
       // During boot /api/me decides; afterwards jump to the consent screen.
       if (session.user && currentPath() !== 'consent') reset('consent');
       break;
-    case 'throttled': toast('Biroz kuting', 'warn'); break;
     default: break;
   }
 }

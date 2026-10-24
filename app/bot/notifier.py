@@ -45,7 +45,7 @@ from app.db.enums import (
 )
 from app.db.uow import read_tx, write_tx
 from app.services import barbers as barbers_svc
-from app.services import bonus, bookings, clock, settings, users
+from app.services import bonus, bookings, clock, notifications, schedule, settings, users
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +53,7 @@ T = TypeVar("T")
 
 MAX_CONCURRENCY = 20
 MAX_PER_SECOND = 25
+MAX_INLINE_RETRY_S = 5  # a longer RetryAfter is not waited out inline [D-7]
 
 
 def _guard(fn: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T | None]]:
@@ -76,6 +77,8 @@ class Notifier:
         self._sem = asyncio.Semaphore(MAX_CONCURRENCY)
         self._sent: deque[float] = deque()
         self._pace_lock = asyncio.Lock()
+        # seconds of the last RetryAfter too long to wait inline; the outbox reschedules
+        self.flood_wait = 0.0
 
     # ------------------------------------------------------------ transport
 
@@ -96,9 +99,15 @@ class Notifier:
             try:
                 return await factory()
             except TelegramRetryAfter as e:
-                await asyncio.sleep(e.retry_after + 0.5)
-                await self._pace()
-                return await factory()
+                if e.retry_after > MAX_INLINE_RETRY_S:
+                    self.flood_wait = max(self.flood_wait, float(e.retry_after))
+                    raise
+                wait = e.retry_after
+        # a short flood wait: sleep without holding a concurrency slot, then retry once
+        await asyncio.sleep(wait + 0.5)
+        async with self._sem:
+            await self._pace()
+            return await factory()
 
     async def send(
         self,
@@ -157,8 +166,10 @@ class Notifier:
 
     async def _barber_unreachable(self, barber_id: int) -> None:
         async with write_tx(self.sm) as s:
-            await barbers_svc.set_reachable(s, barber_id=barber_id, reachable=False)
+            changed = await barbers_svc.set_reachable(s, barber_id=barber_id, reachable=False)
             b = await barbers_svc.get_barber(s, barber_id)
+        if not changed:  # already known: the admins were told the first time
+            return
         log.warning("barber %s blocked the bot: marked unreachable", barber_id)
         await self.alert_admins("admin.alert.barber_unreachable", name=h(b.display_name))
 
@@ -255,10 +266,17 @@ class Notifier:
             return await bookings.list_decision_messages(s, booking_id)
 
     async def _edit_decisions(
-        self, b: Any, outcome_key: str, *, skip: tuple[int, int] | None = None, **kw: Any
+        self,
+        b: Any,
+        outcome_key: str,
+        *,
+        skip: tuple[int, int] | None = None,
+        late_accept: bool = False,
+        **kw: Any,
     ) -> list[int]:
-        """Edit every stored decision message to the outcome, without buttons. Returns chat ids.
-        ``skip`` = (chat_id, message_id) the handler has just redrawn itself."""
+        """Edit every stored decision message to the outcome, without decision buttons.
+        Returns chat ids. ``skip`` = (chat_id, message_id) the handler has just redrawn
+        itself; ``late_accept`` keeps an accept button for the grace period [C-B5]."""
         chats = []
         for chat_id, message_id, _role in await self._decision_messages(b.id):
             if skip is not None and (chat_id, message_id) == skip:
@@ -270,12 +288,10 @@ class Notifier:
                 + "\n\n"
                 + self._card(b, lang, staff=True)
             )
-            await self.edit(
-                chat_id,
-                message_id,
-                text,
-                kb([[btn(t(lang, "barber.open_card"), BookingCb(a="card", id=b.id))]]),
-            )
+            rows = [[btn(t(lang, "barber.open_card"), BookingCb(a="card", id=b.id))]]
+            if late_accept:
+                rows.insert(0, [btn(t(lang, "barber.late_accept"), BookingCb(a="acc", id=b.id))])
+            await self.edit(chat_id, message_id, text, kb(rows))
             chats.append(chat_id)
         return chats
 
@@ -331,7 +347,12 @@ class Notifier:
                 )
             return
         if res.decision_targets:
-            await self._send_decisions(b, res.decision_targets, header_key="notify.decision_new")
+            sent = await self._send_decisions(
+                b, res.decision_targets, header_key="notify.decision_new"
+            )
+            if sent == 0:  # nobody got it (Telegram down?): the outbox retries later
+                async with write_tx(self.sm) as s:
+                    await notifications.schedule_decision_retry(s, booking_id=b.id)
         else:
             log.warning("booking %s is pending without decision targets", b.id)
             await self.alert_admins("admin.alert.no_targets", id=b.id)
@@ -417,7 +438,7 @@ class Notifier:
                 )
                 await self.send(b.barber_tg_id, text, barber_id=b.barber_id)
             return
-        await self._edit_decisions(b, "notify.outcome.expired")
+        await self._edit_decisions(b, "notify.outcome.expired", late_accept=True)
         if self._client_targetable(b):
             lang = norm_lang(b.client_lang)
             text = t(
@@ -475,8 +496,8 @@ class Notifier:
             )
         if r.referral_credited_to:
             await self._referral_credited(r.referral_credited_to)
-        if not self._client_targetable(b):
-            return
+        if b.auto_completed or not self._client_targetable(b):
+            return  # an auto-completion thanks the client by day via the outbox (thx)
         lang = norm_lang(b.client_lang)
         lines = [t(lang, "notify.client_completed", name=h(b.barber_name))]
         lines.extend(
@@ -574,6 +595,11 @@ class Notifier:
                     lang, "notify.mcf_day", when=fmt_dt(b.start_at, lang), name=h(b.barber_name)
                 )
             markup = ckb.visit_confirm_kb(b.id, lang)
+        elif kind == NotificationKind.COMPLETED_THANKS:
+            lines = [t(lang, "notify.client_completed", name=h(b.barber_name))]
+            lines.extend(await self._bonus_lines(b.client_id, lang, earned=0, welcome=0))
+            text = "\n".join(lines)
+            markup = ckb.rebook_kb(b.barber_id, b.service_id, lang)
         else:
             log.warning("unknown notification kind %s", kind)
             return False
@@ -587,17 +613,27 @@ class Notifier:
             per_barber = await bookings.bookings_for_daily_summary(s, day=day)
             pending = await bookings.list_pending_digest(s, day=day)
             all_barbers = {b.id: b for b in await barbers_svc.list_barbers(s, public_only=False)}
-        for barber_id, items in per_barber.items():
+            # barbers working today get the summary even with no bookings (morning_empty)
+            working = [
+                b.id
+                for b in all_barbers.values()
+                if b.is_public and await schedule.barber_windows(s, b.id, day, day)
+            ]
+        for barber_id in list(per_barber) + [x for x in working if x not in per_barber]:
+            items = per_barber.get(barber_id, [])
             barber = all_barbers.get(barber_id)
-            if barber is None or not barber.tg_id:
+            if barber is None or not barber.tg_id or not barber.is_active:
                 continue
             lang = await self._lang_of(barber.tg_id)
             if items:
-                lines = [t(lang, "notify.morning", n=len(items)), ""]
+                # the header counts confirmed visits; unanswered requests are marked ⏳
+                confirmed = sum(1 for b in items if b.status == BookingStatus.CONFIRMED)
+                lines = [t(lang, "notify.morning", n=confirmed), ""]
                 for b in sorted(items, key=lambda x: x.start_at):
                     svc = f" · {h(b.service_name)}" if b.service_name else ""
                     phone = f" · {h(b.client_phone)}" if b.client_phone else ""
-                    lines.append(f"{fmt_time(b.start_at)} {h(b.client_name)}{phone}{svc}")
+                    mark = "⏳ " if b.status == BookingStatus.PENDING else ""
+                    lines.append(f"{mark}{fmt_time(b.start_at)} {h(b.client_name)}{phone}{svc}")
                 text = "\n".join(lines)
             else:
                 text = t(lang, "notify.morning_empty")
@@ -636,7 +672,12 @@ class Notifier:
         for barber_id, rows in by_barber.items():
             barber = all_barbers.get(barber_id)
             recipients: list[tuple[int, str, int | None]] = []
-            if barber is not None and barber.tg_id and barber.is_reachable:
+            if (
+                barber is not None
+                and barber.tg_id
+                and barber.is_reachable
+                and barber.is_active  # a deactivated barber's taps are refused: ask admins
+            ):
                 recipients.append((barber.tg_id, await self._lang_of(barber.tg_id), barber.id))
             else:
                 if admins is None:

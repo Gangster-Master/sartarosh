@@ -61,3 +61,4 @@ class NotificationKind(str, Enum):
     RETURN = "ret"  # "time for a haircut"
     REVIEW = "rev"  # rating request
     MANUAL_VISIT_CONFIRM = "mcf"  # "were you at Ali's today?" for manual bookings
+    COMPLETED_THANKS = "thx"  # "thanks for the visit" after an auto-completion, by day

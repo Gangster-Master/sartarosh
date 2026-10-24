@@ -227,6 +227,8 @@ STRINGS: dict[str, str] = {
     "my.ack_done": "👍 Rahmat! {when} da kutamiz.",
     "my.visit_yes": "Rahmat, tasdiqlandi! ✂️",
     "my.visit_no": "Rahmat, xabar berganingiz uchun. Ma'muriyatga yetkazdik.",
+    "my.visit_already_yes": "Siz bu tashrifni avvalroq tasdiqlagansiz.",
+    "my.visit_already_no": "Siz bu tashrif bo'lmaganini avvalroq bildirgansiz.",
     # ------------------------------------------------------------------ info
     "info.prices_title": "💈 <b>Xizmatlar va narxlar</b>",
     "info.price_line": "• {name} — {price} · {min} daq",
@@ -318,10 +320,11 @@ STRINGS: dict[str, str] = {
     "notify.nightly": (
         "🌙 <b>Belgilanmagan navbatlar: {n} ta</b>\n"
         "Iltimos, bajarildi yoki kelmadi deb belgilang. "
-        "Belgilanmasa, {hours} soatdan keyin avtomatik bajarildi deb yopiladi."
+        "Belgilanmasa, tashrifdan {hours} soat o'tgach (shu xabardan keyin) avtomatik bajarildi deb yopiladi."
     ),
     # ------------------------------------------------------------------ barber
     "barber.accept": "✅ Qabul qilish",
+    "barber.late_accept": "✅ Baribir qabul qilish",
     "barber.reject": "❌ Rad etish",
     "barber.propose": "🕒 Boshqa vaqt taklif qilish",
     "barber.reason_other": "Boshqa…",
@@ -395,12 +398,14 @@ STRINGS: dict[str, str] = {
         "«{barber}» sifatida ulanmoqchi."
     ),
     "admin.alert.barber_unreachable": "⚠️ «{name}» botni bloklagan — uning so'rovlari adminlarga yuboriladi.",
+    "admin.alert.barber_left": "⚠️ Usta «{name}» botdagi hisobini o'chirdi. Uning {n} ta kelgusi navbati bekor qilindi, mijozlarga xabar berildi.",
     "admin.alert.no_targets": "⚠️ #{id} so'rov uchun qabul qiluvchi topilmadi.",
     "admin.alert.expired": "⌛ So'rov #{id} muddati o'tdi: {client} → {name}, {when}",
     "admin.alert.pending_digest": "☀️ Ustasi javob bera olmaydigan so'rovlar: {n} ta",
     "admin.alert.low_rating": "⭐ Past baho: {rating}/5",
     "admin.alert.visit_denied": "⚠️ Mijoz qo'lda yozilgan tashrifni rad etdi:",
     "admin.alert.backup_failed": "🛑 Zaxira nusxa olinmadi! Loglarni tekshiring.",
+    "admin.alert.backup_too_big": "⚠️ Zaxira nusxa ({size_mb} MB) Telegram orqali yuborish uchun juda katta. U serverda saqlandi: {name}",
     # admin: barbers
     "admin.br.title": "💈 <b>Sartaroshlar</b>",
     "admin.br.legend": "🔴 bog'lanmagan · ⚠️ yetib bo'lmaydi · 🔗 tasdiq kutmoqda · ⏸ faol emas",
@@ -487,7 +492,7 @@ STRINGS: dict[str, str] = {
     "admin.wh.set_off": "🌴 Dam olish kuni",
     "admin.wh.ask_break": "Tanaffusni yozing, masalan <code>13:00-14:00</code>, yoki tanaffussiz:",
     "admin.wh.no_break": "➡️ Tanaffussiz",
-    "admin.wh.bad_range": "Format: <code>10:00-20:00</code> (boshlanish tugashdan oldin bo'lsin).",
+    "admin.wh.bad_range": "Format: <code>10:00-20:00</code> (boshlanish tugashdan oldin; daqiqalar 00, 15, 30 yoki 45).",
     "admin.wh.out_of_hours": "✅ Saqlandi. ⚠️ Yangi vaqtdan tashqarida qolgan navbatlar ({n} ta, bekor qilinmadi):",
     # admin: time off
     "admin.to.pick_target": "🌴 Kim uchun dam olish?",
@@ -535,12 +540,12 @@ STRINGS: dict[str, str] = {
     "admin.cl.bonus_btn": "🎁 Bonus ±",
     "admin.cl.block_btn": "🚫 Bloklash",
     "admin.cl.unblock_btn": "✅ Blokdan chiqarish",
-    "admin.cl.reset_btn": "♻️ Kelmaganlarni tiklash",
+    "admin.cl.reset_btn": "♻️ Kelmaganlik cheklovini olib tashlash",
     "admin.cl.block_confirm": "{name} bloklansinmi? Uning faol navbatlari bekor qilinadi.",
     "admin.cl.unblock_confirm": "{name} blokdan chiqarilsinmi?",
     "admin.cl.blocked_ok": "🚫 Bloklandi. Bekor qilingan navbatlar: {n}",
     "admin.cl.unblocked": "✅ Blokdan chiqarildi.",
-    "admin.cl.reset_ok": "♻️ Kelmaganlar hisobi tiklandi.",
+    "admin.cl.reset_ok": "♻️ Cheklov olib tashlandi: avvalgi kelmaganlar endi tasdiqlashni talab qilmaydi. Umumiy tarix (yuqoridagi son) saqlanadi.",
     "admin.cl.ask_delta": "Bonusni qancha o'zgartiramiz? Masalan: <code>+1</code> yoki <code>-2</code>",
     "admin.cl.ask_comment": "{delta} — sababini yozing (majburiy):",
     "admin.cl.bonus_ok": "✅ Bonus o'zgartirildi.",
@@ -667,6 +672,7 @@ STRINGS: dict[str, str] = {
     "err.invalid.service": "Bu xizmat endi mavjud emas.",
     "err.invalid.env_admin": "Asosiy (.env) adminni botdan olib bo'lmaydi.",
     "err.invalid.self": "O'zingizni adminlikdan ololmaysiz.",
+    "err.invalid.blocked_user": "Bu foydalanuvchi bloklangan — avval blokdan chiqaring.",
     "err.invalid.delta": "Bonus balansi manfiy bo'lib qolmasin.",
     "err.invalid.loyalty_mode": "Bonus turini o'zgartirib bo'lmaydi.",
     "err.invalid.balances_exist": "Mijozlarda bonus qoldig'i bor — bonus turini hozir o'zgartirib bo'lmaydi.",

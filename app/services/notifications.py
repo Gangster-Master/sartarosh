@@ -11,12 +11,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.enums import ACTIVE_STATUSES, Awaiting, BookingSource, BookingStatus, NotificationKind
-from app.db.models import Booking, Review, ScheduledNotification, User
+from app.db.models import Barber, Booking, Review, ScheduledNotification, User
 from app.services import clock
-from app.services._common import booking_dto, decision_targets, load_booking
+from app.services._common import booking_dto, decision_targets, is_bookable, load_booking
 from app.services.dto import DueNotification
 from app.services.schedule import barber_windows
-from app.services.settings import get_shop_settings
+from app.services.settings import ShopSettings, get_shop_settings
 
 K = NotificationKind
 
@@ -26,6 +26,7 @@ _STALE: dict[NotificationKind, timedelta] = {
     K.RETURN: timedelta(days=3),
     K.REVIEW: timedelta(hours=24),
     K.MANUAL_VISIT_CONFIRM: timedelta(hours=24),
+    K.COMPLETED_THANKS: timedelta(hours=24),
 }
 
 
@@ -93,6 +94,15 @@ async def schedule_for_booking(
         )
         if b.client_id is None:
             return
+        if b.auto_completed and b.source == BookingSource.BOT:
+            # auto-completion often runs at night: say thanks by day, not at 03:30
+            await _upsert(session, b.id, K.COMPLETED_THANKS, clock.clamp_to_daytime(now))
+        if b.source == BookingSource.MANUAL and b.visit_confirmed is not True:
+            # walk-in [B9]: only the visit check until the client confirms the visit
+            if b.visit_confirmed is None:
+                # auto-completion runs at end + 12 h, often at night: never ask before 10:00
+                await _upsert(session, b.id, K.MANUAL_VISIT_CONFIRM, clock.clamp_to_daytime(now))
+            return
         if s.return_reminder_weeks > 0:
             await _upsert(
                 session,
@@ -107,10 +117,24 @@ async def schedule_for_booking(
                 K.REVIEW,
                 clock.clamp_to_daytime(b.end_at + timedelta(hours=s.review_delay_hours)),
             )
-        if b.source == BookingSource.MANUAL and b.visit_confirmed is None:
-            # auto-completion runs at end + 12 h, often at night: never ask before 10:00
-            await _upsert(session, b.id, K.MANUAL_VISIT_CONFIRM, clock.clamp_to_daytime(now))
         return
+
+
+async def schedule_decision_retry(
+    session: AsyncSession, *, booking_id: int, now: datetime | None = None
+) -> bool:
+    """No decision message reached anyone (Telegram down): re-ping later, even outside
+    working hours, so the request is not left to expire unseen. Returns True if queued."""
+    now = clock.ensure_aware(now) if now else clock.now_utc()
+    b = await load_booking(session, booking_id)
+    if b.status != BookingStatus.PENDING or b.awaiting != Awaiting.BARBER or b.expire_at is None:
+        return False
+    s = await get_shop_settings(session)
+    send_at = now + timedelta(minutes=max(1, s.pending_reping_min))
+    if send_at >= b.expire_at - timedelta(minutes=5):
+        return False
+    await _upsert(session, b.id, K.PENDING_REPING, send_at)
+    return True
 
 
 async def cancel_for_booking(
@@ -143,15 +167,33 @@ async def _is_stale(row: ScheduledNotification, b: Booking, now: datetime) -> bo
 
 
 async def _is_invalid(
-    session: AsyncSession, row: ScheduledNotification, b: Booking, now: datetime
+    session: AsyncSession,
+    row: ScheduledNotification,
+    b: Booking,
+    now: datetime,
+    s: ShopSettings,
 ) -> bool:
     kind = row.kind
     if kind != K.PENDING_REPING:
         if b.client_id is None:
             return True
         client = await session.get(User, b.client_id)
-        if client is None or client.deleted_at is not None:
+        if client is None or client.deleted_at is not None or client.is_blocked:
             return True
+    # the admin may have turned a push off after the row was queued
+    if (
+        (kind == K.REMINDER_24H and not s.reminder_24h_enabled)
+        or (kind == K.REMINDER_2H and not s.reminder_2h_enabled)
+        or (kind == K.REVIEW and not s.reviews_enabled)
+        or (kind == K.RETURN and s.return_reminder_weeks <= 0)
+    ):
+        return True
+    if (
+        kind in (K.RETURN, K.REVIEW)
+        and b.source == BookingSource.MANUAL
+        and b.visit_confirmed is not True
+    ):
+        return True  # walk-in the client has not confirmed [B9]
     if kind in (K.REMINDER_24H, K.REMINDER_2H):
         if b.status != BookingStatus.CONFIRMED or b.start_at <= now:
             return True
@@ -163,6 +205,9 @@ async def _is_invalid(
     if kind == K.RETURN:
         if b.status != BookingStatus.COMPLETED:
             return True
+        barber = await session.get(Barber, b.barber_id)
+        if barber is None or not await is_bookable(session, barber):
+            return True  # "your barber is waiting" would be false
         newer = (
             await session.execute(
                 select(func.count())
@@ -182,6 +227,8 @@ async def _is_invalid(
         return await session.get(Review, b.id) is not None
     if kind == K.MANUAL_VISIT_CONFIRM:
         return b.status != BookingStatus.COMPLETED or b.visit_confirmed is not None
+    if kind == K.COMPLETED_THANKS:
+        return b.status != BookingStatus.COMPLETED  # e.g. flipped to no-show meanwhile
     return False
 
 
@@ -191,6 +238,7 @@ async def claim_due(
     """Claim due rows; cancel stale or invalid ones in the same transaction."""
     now = clock.ensure_aware(now) if now else clock.now_utc()
     out: list[DueNotification] = []
+    s = await get_shop_settings(session)
     # Loop so a batch full of stale rows does not starve valid ones.
     for _ in range(10):
         rows = (
@@ -214,7 +262,11 @@ async def claim_due(
             break
         for row in rows:
             b = await session.get(Booking, row.booking_id)
-            if b is None or await _is_stale(row, b, now) or await _is_invalid(session, row, b, now):
+            if (
+                b is None
+                or await _is_stale(row, b, now)
+                or await _is_invalid(session, row, b, now, s)
+            ):
                 row.cancelled_at = now
                 continue
             row.claimed_at = now
@@ -252,4 +304,16 @@ async def mark_failed(session: AsyncSession, *, notification_id: int, error: str
     row.last_error = (error or "")[:200]
     if row.claimed_at is None:
         row.claimed_at = clock.now_utc()
+    await session.flush()
+
+
+async def retry_later(session: AsyncSession, *, notification_id: int, seconds: float) -> None:
+    """Telegram asked to wait (RetryAfter): unclaim the row and send it again later."""
+    row = await session.get(ScheduledNotification, notification_id)
+    if row is None or row.sent_at is not None:
+        return
+    row.attempts = (row.attempts or 0) + 1
+    row.last_error = f"retry after {int(seconds)} s"
+    row.claimed_at = None
+    row.send_at = clock.now_utc() + timedelta(seconds=seconds)
     await session.flush()

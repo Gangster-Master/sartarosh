@@ -46,6 +46,8 @@ log = logging.getLogger("app.bot")
 
 EXIT_LOCKED = 3
 
+_lock_fh: IO[str] | None = None  # held for the process lifetime once taken
+
 
 def _setup_logging(level: str) -> None:
     logging.basicConfig(
@@ -59,6 +61,10 @@ def _setup_logging(level: str) -> None:
 
 
 def _take_lock() -> IO[str]:
+    """Single-instance lock; idempotent (run.py --migrate takes it before migrating)."""
+    global _lock_fh
+    if _lock_fh is not None:
+        return _lock_fh
     cfg = get_config()
     path = cfg.data_path / "bot.lock"
     fh = open(path, "a+")  # noqa: SIM115 - kept open for the process lifetime
@@ -71,10 +77,13 @@ def _take_lock() -> IO[str]:
     fh.truncate()
     fh.write(str(os.getpid()))
     fh.flush()
+    _lock_fh = fh
     return fh
 
 
 def _release_lock(fh: IO[str]) -> None:
+    global _lock_fh
+    _lock_fh = None
     with contextlib.suppress(OSError):
         fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
         fh.close()

@@ -73,7 +73,11 @@ async def _auto_completed(w: World) -> tuple[int, int]:
         done = await bookings.auto_complete_due(s, now=start + timedelta(minutes=30, hours=11))
         assert done == []
     async with write_tx(w.sm) as s:
+        # end + 12 h (22:30) has passed, but the 23:00 digest must ask the barber first
         done = await bookings.auto_complete_due(s, now=start + timedelta(minutes=30, hours=12))
+        assert done == []
+    async with write_tx(w.sm) as s:
+        done = await bookings.auto_complete_due(s, now=start + timedelta(hours=14))
     assert [d.booking.id for d in done] == [r.booking.id]
     assert done[0].booking.auto_completed and done[0].earned == 1 and done[0].welcome_credited == 1
     return r.booking.id, c

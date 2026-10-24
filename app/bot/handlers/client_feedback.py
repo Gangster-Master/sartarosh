@@ -43,5 +43,5 @@ async def on_rate(
         return
     key = "feedback.thanks_low" if r.is_low else "feedback.thanks"
     await screen.render(call, None, t(lang, key, stars="⭐" * r.rating))
-    if r.is_low and r.rating == callback_data.v:
+    if r.is_low and r.created:
         await notifier.low_rating(r)

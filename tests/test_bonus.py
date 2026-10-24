@@ -242,7 +242,7 @@ async def test_referral_not_on_auto_completed(world: World) -> None:
     start = L(D(0), "10:00")
     await book(world, fid, start)
     async with write_tx(world.sm) as s:
-        done = await bookings.auto_complete_due(s, now=start + timedelta(hours=13))
+        done = await bookings.auto_complete_due(s, now=start + timedelta(hours=14))
     assert done[0].referral_credited_to is None
     assert (await _status(world, ref)).balance == 0
 

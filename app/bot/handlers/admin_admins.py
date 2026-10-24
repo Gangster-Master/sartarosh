@@ -108,6 +108,12 @@ async def on_admin_admins(
         elif a == "del":
             async with read_tx(sm) as s:
                 target_user = await users.get_user(s, uid)
+                target_roles = await users.get_roles(s, uid)
+            if not target_user.is_admin and not target_roles.is_env_admin:
+                # stale/repeated confirm: not a (bot-made) admin any more, tell nobody
+                await views.stale(call, lang)
+                await show_list(call, state, sm, user, lang)
+                return
             if v != "ok":
                 markup = kb(
                     [[btn(t(lang, "common.yes"), acb(S, "del", uid, "ok")), back_btn(lang, S)]]

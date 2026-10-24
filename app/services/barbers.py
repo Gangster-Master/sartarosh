@@ -235,6 +235,8 @@ async def approve_link(
     ).scalar_one_or_none()
     if other is not None:
         raise InvalidInviteError("user already a barber")
+    if (await load_user(session, user_id)).is_blocked:  # [A7]
+        raise InputError("user is blocked", field="blocked_user")
     b.user_id = user_id
     b.pending_link_user_id = None
     b.is_reachable = True
@@ -357,6 +359,8 @@ async def activate_barber(
 ) -> BarberDTO:
     await require_admin(session, actor_user_id)
     b = await load_barber(session, barber_id)
+    if b.user_id is not None and (await load_user(session, b.user_id)).is_blocked:  # [A7]
+        raise InputError("user is blocked", field="blocked_user")
     b.is_active = True
     await session.flush()
     await write_audit(
@@ -369,12 +373,14 @@ async def activate_barber(
     return await barber_dto(session, b)
 
 
-async def set_reachable(session: AsyncSession, *, barber_id: int, reachable: bool) -> None:
-    """Internal."""
+async def set_reachable(session: AsyncSession, *, barber_id: int, reachable: bool) -> bool:
+    """Internal. Returns True if the flag changed."""
     b = await load_barber(session, barber_id)
     if b.is_reachable != reachable:
         b.is_reachable = reachable
         await session.flush()
+        return True
+    return False
 
 
 async def mark_reachable_by_user(session: AsyncSession, *, user_id: int) -> bool:

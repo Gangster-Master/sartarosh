@@ -169,7 +169,11 @@ async def on_admin_hours(
                 return
             await _ask_break(call, state, lang, bid, rng[0], rng[1])
         elif a in ("nobr", "brk"):
-            if await state.get_state() != AdminHoursFlow.break_.state:
+            data = await state.get_data()
+            if (
+                await state.get_state() != AdminHoursFlow.break_.state
+                or data.get("barber_id") != bid  # a stale button of another barber [D-4]
+            ):
                 await views.stale(call, lang)
                 return
             rng = _unpack_range(v) if a == "brk" else None
@@ -257,10 +261,12 @@ async def on_admin_hours(
             await screen.render(call, None, t(lang, "admin.wh.copy_scope"), kb(rows))
         elif a == "cp":
             src, _, sun = v.partition("-")
-            if not src.isdigit():
+            if not src.isdigit() or not 0 <= int(src) <= 6:
                 await views.stale(call, lang)
                 return
             async with write_tx(sm) as s:
+                if not any(w.weekday == int(src) for w in await schedule.get_week_hours(s, bid)):
+                    raise _StaleCopy  # the source day is off now: copying it would wipe the week
                 out = await schedule.copy_hours_to_all_weekdays(
                     s,
                     actor_user_id=user.id,
@@ -274,12 +280,24 @@ async def on_admin_hours(
     except _AlreadySet:
         await state.clear()
         await show_week(call, sm, lang, bid)
+    except _StaleCopy:
+        await views.stale(call, lang)
+        await show_week(call, sm, lang, bid)
     except ServiceError as e:
         await views.alert(call, views.err_text(lang, e))
 
 
 class _AlreadySet(Exception):
     """A one-tap preset arrived after the barber already got hours."""
+
+
+class _StaleCopy(Exception):
+    """A copy button whose source day has no hours any more."""
+
+
+def _on_grid(rng: tuple[time, time] | None) -> bool:
+    """Hours and breaks sit on the 15-minute grid (the service refuses others)."""
+    return rng is not None and all(x.minute % 15 == 0 and x.second == 0 for x in rng)
 
 
 async def _ask_break(
@@ -300,7 +318,7 @@ async def _ask_break(
 @router.message(StateFilter(AdminHoursFlow.start), F.text)
 async def on_range(message: Message, state: FSMContext, lang: str) -> None:
     rng = views.parse_time_range(message.text or "")
-    if rng is None:
+    if rng is None or not _on_grid(rng):
         await message.answer(t(lang, "admin.wh.bad_range"))
         return
     data = await state.get_data()
@@ -310,7 +328,7 @@ async def on_range(message: Message, state: FSMContext, lang: str) -> None:
 @router.message(StateFilter(AdminHoursFlow.break_), F.text)
 async def on_break(message: Message, state: FSMContext, sm: SM, user: Any, lang: str) -> None:
     rng = views.parse_time_range(message.text or "")
-    if rng is None:
+    if rng is None or not _on_grid(rng):
         await message.answer(t(lang, "admin.wh.bad_range"))
         return
     await _save(message, state, sm, user, lang, rng[0], rng[1])

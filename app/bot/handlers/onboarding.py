@@ -23,6 +23,7 @@ from app.bot.i18n import h, labels, norm_lang, t
 from app.bot.keyboards.common import btn, kb, lang_picker, menu_for, role_picker
 from app.bot.notifier import Notifier
 from app.config import CONSENT_VERSION
+from app.db.enums import BookingStatus
 from app.db.uow import read_tx, write_tx
 from app.services import barbers, users
 from app.services.errors import ServiceError
@@ -152,13 +153,13 @@ async def on_consent(
 async def cmd_menu(
     message: Message, state: FSMContext, sm: SM, user: Any, roles: Any, lang: str
 ) -> None:
-    await _leave_flow(message, state)
+    await _leave_flow(message, state, roles, lang)
     await views.send_home(message, state, sm, user, roles, lang)
 
 
 @router.message(Command("cancel"), ANY)
 async def cmd_cancel(message: Message, state: FSMContext, roles: Any, lang: str) -> None:
-    await _leave_flow(message, state)
+    await _leave_flow(message, state, roles, lang)
     await message.answer(t(lang, "common.cancelled"), reply_markup=menu_for(roles, lang))
 
 
@@ -171,7 +172,11 @@ async def on_flow_cancel(
     await screen.render(call, None, t(lang, "common.cancelled"))
 
 
-async def _leave_flow(message: Message, state: FSMContext) -> None:
+async def _leave_flow(message: Message, state: FSMContext, roles: Any, lang: str) -> None:
+    from app.bot.handlers.client_booking import cleanup_contact
+
+    # left at the phone step: drop the "📱 send phone" keyboard, give the menu back
+    await cleanup_contact(message.bot, message.chat.id, state, roles, lang)  # type: ignore[arg-type]
     data = await state.get_data()
     await state.clear()
     if data.get("msg_id"):
@@ -235,6 +240,7 @@ async def on_delete_me(
     sm: SM,
     notifier: Notifier,
     user: Any,
+    roles: Any,
     lang: str,
 ) -> None:
     if callback_data.a != "yes":
@@ -242,6 +248,11 @@ async def on_delete_me(
         return
     try:
         async with write_tx(sm) as s:
+            barber = (
+                await barbers.get_barber(s, roles.barber_id)
+                if roles is not None and roles.barber_id
+                else None
+            )
             cancelled = await users.delete_me(s, user_id=user.id)
     except ServiceError as e:
         await views.alert(call, views.err_text(lang, e))
@@ -250,7 +261,10 @@ async def on_delete_me(
     await screen.render(call, None, t(lang, "onb.deleted"))
     await screen.send_reply_kb(call.bot, call.from_user.id, "👋", ReplyKeyboardRemove())  # type: ignore[arg-type]
     for b in cancelled:
-        await notifier.booking_cancelled(b, by_client=True)
+        await notifier.booking_cancelled(b, by_client=b.status == BookingStatus.CANCELLED_BY_CLIENT)
+    if barber is not None:
+        n = sum(1 for b in cancelled if b.status == BookingStatus.CANCELLED_BY_BARBER)
+        await notifier.alert_admins("admin.alert.barber_left", name=h(barber.display_name), n=n)
 
 
 # ------------------------------------------------------------------ role switch
@@ -258,7 +272,7 @@ async def on_delete_me(
 
 @router.message(F.text.in_(labels("menu.role")), ANY)
 async def on_role_button(message: Message, state: FSMContext, roles: Any, lang: str) -> None:
-    await _leave_flow(message, state)
+    await _leave_flow(message, state, roles, lang)
     await message.answer(t(lang, "role.pick"), reply_markup=role_picker(lang, roles))
 
 
@@ -297,7 +311,7 @@ async def on_role(
 async def on_client_view(
     message: Message, state: FSMContext, sm: SM, user: Any, roles: Any, lang: str
 ) -> None:
-    await _leave_flow(message, state)
+    await _leave_flow(message, state, roles, lang)
     await views.send_home(message, state, sm, user, roles, lang, view="c")
 
 
@@ -310,40 +324,48 @@ async def on_book(
 ) -> None:
     from app.bot.handlers import client_booking
 
-    await _leave_flow(message, state)
+    await _leave_flow(message, state, roles, lang)
     await client_booking.start_booking(message, state, sm, user, lang, entry="service_first")
 
 
 @router.message(F.text.in_(labels("menu.my")), ANY)
 @router.message(Command("my"), ANY)
-async def on_my(message: Message, state: FSMContext, sm: SM, user: Any, lang: str) -> None:
+async def on_my(
+    message: Message, state: FSMContext, sm: SM, user: Any, roles: Any, lang: str
+) -> None:
     from app.bot.handlers import client_my
 
-    await _leave_flow(message, state)
+    await _leave_flow(message, state, roles, lang)
     await client_my.show_my(message, state, sm, user, lang)
 
 
 @router.message(F.text.in_(labels("menu.bonus")), ANY)
-async def on_bonus(message: Message, state: FSMContext, sm: SM, user: Any, lang: str) -> None:
+async def on_bonus(
+    message: Message, state: FSMContext, sm: SM, user: Any, roles: Any, lang: str
+) -> None:
     from app.bot.handlers import client_info
 
-    await _leave_flow(message, state)
+    await _leave_flow(message, state, roles, lang)
     await client_info.show_bonus(message, state, sm, user, lang)
 
 
 @router.message(F.text.in_(labels("menu.prices")), ANY)
-async def on_prices(message: Message, state: FSMContext, sm: SM, user: Any, lang: str) -> None:
+async def on_prices(
+    message: Message, state: FSMContext, sm: SM, user: Any, roles: Any, lang: str
+) -> None:
     from app.bot.handlers import client_info
 
-    await _leave_flow(message, state)
+    await _leave_flow(message, state, roles, lang)
     await client_info.show_prices(message, state, sm, lang)
 
 
 @router.message(F.text.in_(labels("menu.info")), ANY)
-async def on_info(message: Message, state: FSMContext, sm: SM, user: Any, lang: str) -> None:
+async def on_info(
+    message: Message, state: FSMContext, sm: SM, user: Any, roles: Any, lang: str
+) -> None:
     from app.bot.handlers import client_info
 
-    await _leave_flow(message, state)
+    await _leave_flow(message, state, roles, lang)
     await client_info.show_address(message, state, sm, lang)
 
 
@@ -357,7 +379,7 @@ async def on_today(
 ) -> None:
     from app.bot.handlers import barber_queue
 
-    await _leave_flow(message, state)
+    await _leave_flow(message, state, roles, lang)
     await barber_queue.show_day(message, state, sm, user, roles, lang, day=None)
 
 
@@ -365,7 +387,7 @@ async def on_today(
 async def on_upcoming(message: Message, state: FSMContext, sm: SM, roles: Any, lang: str) -> None:
     from app.bot.handlers import barber_queue
 
-    await _leave_flow(message, state)
+    await _leave_flow(message, state, roles, lang)
     await barber_queue.show_day_picker(message, state, sm, lang)
 
 
@@ -373,7 +395,7 @@ async def on_upcoming(message: Message, state: FSMContext, sm: SM, roles: Any, l
 async def on_busy(message: Message, state: FSMContext, sm: SM, roles: Any, lang: str) -> None:
     from app.bot.handlers import barber_block
 
-    await _leave_flow(message, state)
+    await _leave_flow(message, state, roles, lang)
     await barber_block.show_busy(message, lang, sm, roles)
 
 
@@ -381,7 +403,7 @@ async def on_busy(message: Message, state: FSMContext, sm: SM, roles: Any, lang:
 async def on_block(message: Message, state: FSMContext, sm: SM, roles: Any, lang: str) -> None:
     from app.bot.handlers import barber_block
 
-    await _leave_flow(message, state)
+    await _leave_flow(message, state, roles, lang)
     await barber_block.start_block(message, state, sm, roles, lang)
 
 
@@ -389,7 +411,7 @@ async def on_block(message: Message, state: FSMContext, sm: SM, roles: Any, lang
 async def on_manual(message: Message, state: FSMContext, sm: SM, roles: Any, lang: str) -> None:
     from app.bot.handlers import barber_manual
 
-    await _leave_flow(message, state)
+    await _leave_flow(message, state, roles, lang)
     await barber_manual.start_manual(message, state, sm, roles, lang)
 
 
@@ -419,7 +441,7 @@ async def on_admin_section(
 ) -> None:
     import importlib
 
-    await _leave_flow(message, state)
+    await _leave_flow(message, state, roles, lang)
     module_name, fn_name = _ADMIN_SECTIONS[_ADMIN_LABELS[message.text or ""]]
     module = importlib.import_module(f"app.bot.handlers.{module_name}")
     await getattr(module, fn_name)(message, state, sm, user, lang)

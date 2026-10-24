@@ -341,6 +341,7 @@ class ReviewResult:
     booking_id: int
     rating: int
     is_low: bool  # rating <= 3
+    created: bool = True  # False when the booking was already rated (idempotent repeat)
 
 
 @dataclass(frozen=True, slots=True)

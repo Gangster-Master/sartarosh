@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.enums import ACTIVE_STATUSES, BonusReason, BookingSource, BookingStatus, LoyaltyMode
-from app.db.models import BonusTransaction, Booking, User
+from app.db.models import Barber, BonusTransaction, Booking, User
 from app.services import clock
 from app.services._common import add_user_counter, load_booking, load_user, require_admin
 from app.services.audit import write_audit
@@ -165,6 +165,8 @@ async def _other_completed(session: AsyncSession, user_ids: list[int], booking_i
                 Booking.client_id.in_(user_ids),
                 Booking.status == BookingStatus.COMPLETED,
                 Booking.id != booking_id,
+                # a walk-in counts only once the client confirmed it happened
+                or_(Booking.source != BookingSource.MANUAL, Booking.visit_confirmed.is_(True)),
             )
         )
     ).scalar_one()
@@ -200,6 +202,11 @@ async def award_for_completion(
     mode = _mode(s)
     user = await load_user(session, b.client_id)
     if user.deleted_at is not None:
+        return 0, 0, None
+    barber_user_id = (
+        await session.execute(select(Barber.user_id).where(Barber.id == b.barber_id))
+    ).scalar_one_or_none()
+    if barber_user_id == user.id:  # a barber's visit to himself earns nothing [S-01]
         return 0, 0, None
     earned = 0
     earn_day = clock.to_local(b.start_at).date()

@@ -225,7 +225,16 @@ async def test_any_barber_none_free(world: World) -> None:
 
 
 async def test_no_service_uses_step(world: World) -> None:
+    from app.services import catalog
+
     c = await world.new_client()
+    with pytest.raises(InputError):  # the shop sells services: one must be chosen (Q2)
+        await book(world, c, L(D(1), "10:00"), service_id=None)
+    async with write_tx(world.sm) as s:
+        for sid in (world.svc30, world.svc60):
+            await catalog.update_service(
+                s, actor_user_id=world.admin_id, service_id=sid, is_active=False
+            )
     r = await book(world, c, L(D(1), "10:00"), service_id=None)
     assert r.booking.service_id is None and r.booking.duration_min == 30
     assert r.booking.price_snapshot == 0

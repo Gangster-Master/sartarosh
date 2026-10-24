@@ -1,5 +1,5 @@
-// Barbers list with photos, bio and price table.
-import { h, fill, skeleton, errorBox, empty, avatar, fmtPrice, fmtDur } from '../ui.js';
+// Barbers list with photos, public rating, bio and price table.
+import { h, fill, skeleton, errorBox, empty, avatar, fmtPrice, fmtDur, fmtRating } from '../ui.js';
 import { get } from '../api.js';
 import { setMainButton } from '../tg.js';
 import { go } from '../router.js';
@@ -20,7 +20,8 @@ export function render(root) {
       list.map((b) => h('article', { class: 'card barber' },
         h('div', { class: 'barber-head' },
           avatar(b.name, b.photo_url, 64),
-          h('div', { class: 'row-main' }, h('div', { class: 'barber-name', text: b.name }), b.bio && h('div', { class: 'hint pre', text: b.bio }))),
+          h('div', { class: 'row-main' }, h('div', { class: 'barber-name', text: b.name }),
+            h('div', { class: 'barber-rating hint small', text: fmtRating(b, "⭐ Hali baho yo'q") }), b.bio && h('div', { class: 'hint pre', text: b.bio }))),
         (b.services || []).length ? h('div', { class: 'prices' }, b.services.map((s) => h('div', { class: 'price-row' },
           h('span', { text: s.name }), h('span', { class: 'hint small', text: fmtDur(s.duration_min) }), h('b', { text: fmtPrice(s.price_uzs) })))) : null,
         h('button', { class: 'btn secondary block', type: 'button', text: 'Shu ustaga yozilish', onclick: () => go(`book?barber=${b.id}`) }))));

@@ -40,6 +40,11 @@ mitigated. The open items are listed under "Known limitations" and in the roadma
 | `python -m app` with a fake token | migrations at head, exit 2, "BOT_TOKEN was rejected" |
 | `python -m app` with bad `ADMIN_IDS` or `LOG_LEVEL` | a warning is logged for each bad value |
 
+**QA hunt pass (2026-10-24):** 42 confirmed findings from 7 hunters fixed (ratings integrity,
+hourless barbers, walk-in pushes, late accept, auto-completion vs. the nightly digest, outbox
+settings, RetryAfter, admin hours, Mini App `fmtRating`, …). Their regression tests live in
+`tests/test_qa_*.py`. `pytest -q`: **491 passed**; `ruff check .` clean.
+
 ## 2. Judge rulings: critic findings
 
 | # | Finding | Ruling | What was done |
@@ -95,6 +100,8 @@ mitigated. The open items are listed under "Known limitations" and in the roadma
   - "New clients" in stats also counts staff accounts.
   - At service level, a bonus can be reserved on a free (0 so'm) service. The bot UI hides that option.
 - **Staged walk-ins:** a barber and a friend can still earn one stamp a day through staged walk-ins (audited; see #11).
+
+- **Hours end by midnight:** working hours end at 23:59 at the latest; a shop can't stay open past midnight (QA_PLAN §7, by design).
 
 ## 5. Next steps (roadmap)
 

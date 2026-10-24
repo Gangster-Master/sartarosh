@@ -50,6 +50,8 @@ async def on_hub(
     from app.bot.handlers import client_booking, client_my
 
     a = callback_data.a
+    # an older hub button tapped at the phone step: give the menu back first
+    await client_booking.cleanup_contact(call.bot, call.from_user.id, state, roles, lang)  # type: ignore[arg-type]
     await state.clear()
     if a == "book":
         await client_booking.start_booking(call, state, sm, user, lang, entry="service_first")
@@ -197,7 +199,8 @@ async def show_address(target: Target, state: FSMContext | None, sm: SM, lang: s
     async with read_tx(sm) as s:
         shop = await settings.get_shop_settings(s)
         week = await schedule.get_shop_week_hours(s)
-    now_local = clock.to_local(clock.now_utc())
+        now_local = clock.to_local(clock.now_utc())
+        holiday = await schedule.shop_time_off_on(s, now_local.date())
     lines = []
     lines.append(
         f"💈 <b>{h(shop.shop_name)}</b>" if shop.shop_name else t(lang, "info.address_title")
@@ -209,15 +212,21 @@ async def show_address(target: Target, state: FSMContext | None, sm: SM, lang: s
     by_wd = {d.weekday: d for d in week}
     today = by_wd.get(now_local.weekday())
     if today is not None:
+        now = clock.now_utc()
         is_open = (
             today.open_time is not None
             and today.close_time is not None
             and today.open_time <= now_local.time() < today.close_time
+            and not any(iv.start <= now < iv.end for iv in holiday)  # shop-wide day off
         )
+        hours = _hours_line(today, lang)
+        if today.open_time is not None and today.close_time is not None:
+            day = now_local.date()
+            o, c = clock.local_dt(day, today.open_time), clock.local_dt(day, today.close_time)
+            if any(iv.start <= o and iv.end >= c for iv in holiday):
+                hours = t(lang, "info.closed")  # closed all day today
         status = t(lang, "info.open_now") if is_open else t(lang, "info.closed_now")
-        lines.extend(
-            ["", t(lang, "info.today_hours", hours=_hours_line(today, lang), status=status)]
-        )
+        lines.extend(["", t(lang, "info.today_hours", hours=hours, status=status)])
     lines.extend(["", t(lang, "info.week_hours")])
     for wd in range(7):
         d = by_wd.get(wd)

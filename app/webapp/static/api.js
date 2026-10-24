@@ -12,10 +12,11 @@ export class ApiError extends Error {
 }
 
 const NETWORK_MSG = 'Internet aloqasini tekshiring';
-const GLOBAL = new Set(['unauthorized', 'user_blocked', 'consent_required', 'throttled']);
+// 'throttled' (429) is not global: the screen shows its own error box with a retry.
+const GLOBAL = new Set(['unauthorized', 'user_blocked', 'consent_required']);
 let onGlobal = () => {};
 
-/** Register the handler for unauthorized / user_blocked / consent_required / throttled. */
+/** Register the handler for unauthorized / user_blocked / consent_required. */
 export function setGlobalErrorHandler(fn) { onGlobal = fn; }
 
 /**

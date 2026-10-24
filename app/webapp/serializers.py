@@ -325,6 +325,11 @@ def shop_json(shop: ShopSettings, week: list[ShopDayHours]) -> dict[str, Any]:
     }
 
 
+def rating_json(b: BarberDTO) -> dict[str, Any]:
+    """Public rating, same numbers as the bot's rating_badge: avg is None until the first review."""
+    return {"rating_avg": b.rating_avg if b.rating_count else None, "rating_count": b.rating_count}
+
+
 def photo_url(b: BarberDTO) -> str | None:
     if not b.photo_file_id:
         return None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import secrets
 from dataclasses import dataclass, fields
 from datetime import time
@@ -168,6 +169,8 @@ def parse_value(key: str, raw_value: str) -> Any:
             if spec.nullable and raw.lower() in _EMPTY:
                 return None
             v = float(raw.replace(",", "."))
+            if not math.isfinite(v):  # "nan" / "inf" parse but are no coordinates
+                raise ValueError(raw)
         elif spec.type == "bool":
             low = raw.lower()
             if low in _TRUE:
@@ -263,7 +266,10 @@ async def update_setting(
         if s_old.loyalty_mode != s_new.loyalty_mode:
             has_balance = (
                 await session.execute(
-                    select(func.count()).select_from(User).where(User.bonus_balance != 0)
+                    select(func.count())
+                    .select_from(User)
+                    # a deleted account's leftover balance can never be spent [admin-5]
+                    .where(User.bonus_balance != 0, User.deleted_at.is_(None))
                 )
             ).scalar_one()
             has_reserved = (

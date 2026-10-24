@@ -34,7 +34,8 @@ async def test_invite_ttl_and_flow(world: World) -> None:
         assert b.id not in [x.id for x in await barbers.list_barbers(s)]
     async with write_tx(world.sm) as s:
         out = await barbers.approve_link(s, actor_user_id=world.admin_id, barber_id=b.id, user_id=u)
-    assert out.user_id == u and out.is_public
+    # linked, but hidden from clients until he has working hours [D-1]
+    assert out.user_id == u and out.is_active and not out.is_public
     async with read_tx(world.sm) as s:
         roles = await users.get_roles(s, u)
     assert roles.is_barber and roles.barber_id == b.id

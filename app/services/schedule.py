@@ -249,6 +249,12 @@ async def get_shop_week_hours(session: AsyncSession) -> list[ShopDayHours]:
     return out
 
 
+async def shop_time_off_on(session: AsyncSession, day: date) -> list[Interval]:
+    """Shop-wide time off (holidays) overlapping the local ``day``."""
+    s, e = clock.day_bounds_utc(day)
+    return await time_off_blocks(session, None, s, e)
+
+
 async def set_working_hours(
     session: AsyncSession,
     *,
@@ -334,6 +340,8 @@ async def copy_hours_to_all_weekdays(
     await load_barber(session, barber_id)
     hm = await hours_map(session, barber_id)
     src = hm.get(int(source_weekday))
+    if src is None:  # a day off (or no such weekday): copying it would wipe the week
+        raise InputError("source day has no hours", field="weekday")
     targets = [d for d in range(7 if include_sunday else 6) if d != source_weekday]
     for wd in targets:
         row = (
